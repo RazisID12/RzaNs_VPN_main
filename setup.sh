@@ -574,6 +574,22 @@ fi
 mkdir -p /etc/wireguard \
          /opt/rzans_vpn_main/client/{rzans_svpn_main,rzans_fvpn_main}
 
+# ── миграция старых имён конфигов (если остались после предыдущих версий)
+if [[ -f /etc/wireguard/RzaNs_sVPN_main.conf && ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
+    mv /etc/wireguard/RzaNs_sVPN_main.conf /etc/wireguard/rzans_svpn_main.conf
+fi
+if [[ -f /etc/wireguard/RzaNs_fVPN_main.conf && ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
+    mv /etc/wireguard/RzaNs_fVPN_main.conf /etc/wireguard/rzans_fvpn_main.conf
+fi
+
+# ── миграция старых имён конфигов (если остались после предыдущих версий)
+if [[ -f /etc/wireguard/RzaNs_sVPN_main.conf && ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
+    mv /etc/wireguard/RzaNs_sVPN_main.conf /etc/wireguard/rzans_svpn_main.conf
+fi
+if [[ -f /etc/wireguard/RzaNs_fVPN_main.conf && ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
+    mv /etc/wireguard/RzaNs_fVPN_main.conf /etc/wireguard/rzans_fvpn_main.conf
+fi
+
 # Настраиваем сервер AmneziaWG для первого запуска, пересоздаём профили (если ключей/клиентов ещё нет — client.sh создаст их)
 /opt/rzans_vpn_main/client.sh 4
 

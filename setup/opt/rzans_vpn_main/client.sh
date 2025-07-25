@@ -45,18 +45,25 @@ render() {
 }
 
 initWireGuard(){
-	if [[ ! -f /etc/wireguard/key ]]; then
-		echo
-		echo 'Generating WireGuard/AmneziaWG server keys'
-		PRIVATE_KEY="$(wg genkey)"
-		PUBLIC_KEY="$(echo "${PRIVATE_KEY}" | wg pubkey)"
-		echo "PRIVATE_KEY=${PRIVATE_KEY}
-PUBLIC_KEY=${PUBLIC_KEY}" > /etc/wireguard/key
+    # 1) Генерируем ключи, если их ещё нет
+    if [[ ! -f /etc/wireguard/key ]]; then
+        echo
+        echo 'Generating WireGuard/AmneziaWG server keys'
+        PRIVATE_KEY="$(wg genkey)"
+        PUBLIC_KEY="$(echo "${PRIVATE_KEY}" | wg pubkey)"
+        printf 'PRIVATE_KEY=%s\nPUBLIC_KEY=%s\n' "$PRIVATE_KEY" "$PUBLIC_KEY" > /etc/wireguard/key
+    fi
+
+    # 2) Всегда убеждаемся, что оба серверных конфига присутствуют
+    if [[ ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
         render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_svpn_main.conf"
-        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_fvpn_main.conf"
         sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/" /etc/wireguard/rzans_svpn_main.conf
+    fi
+
+    if [[ ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
+        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_fvpn_main.conf"
         sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"  /etc/wireguard/rzans_fvpn_main.conf
-	fi
+    fi
 }
 
 addWireGuard(){
