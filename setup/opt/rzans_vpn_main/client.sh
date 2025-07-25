@@ -210,10 +210,22 @@ deleteWireGuard(){
 }
 
 listWireGuard(){
-	[[ -n "$CLIENT_NAME" ]] && return
-	echo
-	echo 'Client names:'
-	cat /etc/wireguard/rzans_svpn_main.conf /etc/wireguard/rzans_fvpn_main.conf | grep -E "^# Client" | cut -d '=' -f 2 | sed 's/ //g' | sort -u
+    [[ -n "$CLIENT_NAME" ]] && return
+    echo
+    echo 'Client names:'
+    # Избегаем падения при отсутствии клиентов (grep возвращает 1)
+    set +e
+    CLIENTS_OUT=$(grep -hE '^# Client' \
+        /etc/wireguard/rzans_svpn_main.conf \
+        /etc/wireguard/rzans_fvpn_main.conf 2>/dev/null \
+        | cut -d '=' -f 2- | sed 's/ //g' | sort -u)
+    status=$?
+    set -e
+    if [[ -z "$CLIENTS_OUT" ]]; then
+        echo '(none)'
+        return
+    fi
+    printf '%s\n' "$CLIENTS_OUT"
 }
 
 recreate(){
@@ -222,15 +234,28 @@ recreate(){
     find /opt/rzans_vpn_main/client -type f -delete
 
 	# AmneziaWG
-	if [[ -f /etc/wireguard/key && -f /etc/wireguard/rzans_svpn_main.conf && -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
-		cat /etc/wireguard/rzans_svpn_main.conf /etc/wireguard/rzans_fvpn_main.conf | grep -E "^# Client" | cut -d '=' -f 2 | sed 's/ //g' | sort -u | while read -r CLIENT_NAME; do
-			if [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
-				addWireGuard >/dev/null
-				echo "Profile files recreated for client '$CLIENT_NAME'"
-			else
-				echo "Client name '$CLIENT_NAME' is invalid! No profile files recreated"
-			fi
-		done
+    if [[ -f /etc/wireguard/key && -f /etc/wireguard/rzans_svpn_main.conf && -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
+        # Безопасно собираем список клиентов (может быть пустым)
+        set +e
+        CLIENTS_OUT=$(grep -hE '^# Client' \
+            /etc/wireguard/rzans_svpn_main.conf \
+            /etc/wireguard/rzans_fvpn_main.conf 2>/dev/null \
+            | cut -d '=' -f 2- | sed 's/ //g' | sort -u)
+        set -e
+        if [[ -z "${CLIENTS_OUT:-}" ]]; then
+            echo "No clients found — nothing to recreate."
+        else
+            # обойдём по строкам
+            while IFS= read -r CLIENT_NAME; do
+                [[ -z "$CLIENT_NAME" ]] && continue
+                if [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
+                    addWireGuard >/dev/null
+                    echo "Profile files recreated for client '$CLIENT_NAME'"
+                else
+                    echo "Client name '$CLIENT_NAME' is invalid! No profile files recreated"
+                fi
+            done <<< "$CLIENTS_OUT"
+        fi
 	else
         CLIENT_NAME="client"
 		echo "Creating server keys and first client: '$CLIENT_NAME'"
