@@ -218,7 +218,7 @@ listWireGuard(){
     CLIENTS_OUT=$(grep -hE '^# Client' \
         /etc/wireguard/rzans_svpn_main.conf \
         /etc/wireguard/rzans_fvpn_main.conf 2>/dev/null \
-        | cut -d '=' -f 2- | sed 's/ //g' | sort -u)
+        | cut -d '=' -f 2- | sed 's/ //g' | sort -u || true)
     status=$?
     set -e
     if [[ -z "$CLIENTS_OUT" ]]; then
@@ -240,7 +240,7 @@ recreate(){
         CLIENTS_OUT=$(grep -hE '^# Client' \
             /etc/wireguard/rzans_svpn_main.conf \
             /etc/wireguard/rzans_fvpn_main.conf 2>/dev/null \
-            | cut -d '=' -f 2- | sed 's/ //g' | sort -u)
+            | cut -d '=' -f 2- | sed 's/ //g' | sort -u || true)
         set -e
         if [[ -z "${CLIENTS_OUT:-}" ]]; then
             echo "No clients found — nothing to recreate."
