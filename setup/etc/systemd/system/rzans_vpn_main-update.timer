@@ -1,0 +1,9 @@
+[Unit]
+Description=RzaNs_VPN_main-update daily between 2:00 and 4:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=2h
+
+[Install]
+WantedBy=timers.target

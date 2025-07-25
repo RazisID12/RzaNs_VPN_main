@@ -1,0 +1,335 @@
+#!/bin/bash
+# chmod +x client.sh && ./client.sh [1-5] [имя_клиента]
+#
+set -eEuo pipefail
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 027
+
+handle_error() {
+    local os
+    os="$(lsb_release -ds 2>/dev/null \
+         || grep -oP '(?<=^PRETTY_NAME=).*' /etc/os-release | tr -d '\"')"
+    echo "$os $(uname -r) $(date --iso-8601=seconds)"
+	echo -e "\e[1;31mError at line $1: $2\e[0m"
+	exit 1
+}
+trap 'handle_error $LINENO "$BASH_COMMAND"' ERR
+
+export LC_ALL=C
+
+askClientName(){
+	if ! [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
+		echo
+		echo 'Enter client name: 1–32 alphanumeric characters (a-z, A-Z, 0-9) with underscore (_) or dash (-)'
+		until [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; do
+			read -rp 'Client name: ' -e CLIENT_NAME
+		done
+	fi
+}
+
+# устанавливаем SERVER_HOST (домен или IP) для Endpoint-а и имени файла
+setServerHost(){
+    [[ -n "$1" ]] && SERVER_HOST="$1" || SERVER_HOST="$SERVER_IP"
+}
+
+render() {
+	local IFS=''
+	while read -r line; do
+		while [[ "$line" =~ (\$\{[a-zA-Z_][a-zA-Z_0-9]*\}) ]]; do
+			local LHS="${BASH_REMATCH[1]}"
+			local RHS="$(eval echo "\"$LHS\"")"
+			line="${line//$LHS/$RHS}"
+		done
+		echo "$line"
+	done < "$1"
+}
+
+initWireGuard(){
+	if [[ ! -f /etc/wireguard/key ]]; then
+		echo
+		echo 'Generating WireGuard/AmneziaWG server keys'
+		PRIVATE_KEY="$(wg genkey)"
+		PUBLIC_KEY="$(echo "${PRIVATE_KEY}" | wg pubkey)"
+		echo "PRIVATE_KEY=${PRIVATE_KEY}
+PUBLIC_KEY=${PUBLIC_KEY}" > /etc/wireguard/key
+        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_svpn_main.conf"
+        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_fvpn_main.conf"
+        sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/" /etc/wireguard/rzans_svpn_main.conf
+        sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"  /etc/wireguard/rzans_fvpn_main.conf
+	fi
+}
+
+addWireGuard(){
+    setServerHost "$WIREGUARD_HOST"
+
+    # --- синхронизируем ListenPort в конфиге при каждом вызове ---
+    sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/" /etc/wireguard/rzans_svpn_main.conf
+    sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"  /etc/wireguard/rzans_fvpn_main.conf
+    if systemctl is-active --quiet wg-quick@rzans_svpn_main; then
+        wg syncconf rzans_svpn_main <(wg-quick strip rzans_svpn_main 2>/dev/null)
+    fi
+    if systemctl is-active --quiet wg-quick@rzans_fvpn_main; then
+        wg syncconf rzans_fvpn_main <(wg-quick strip rzans_fvpn_main 2>/dev/null)
+    fi
+	echo
+
+	source /etc/wireguard/key
+    # файл /etc/wireguard/ips нужен не всегда: читаем безопасно
+    [[ -f /etc/wireguard/ips ]] && IPS="$(cat /etc/wireguard/ips)" || IPS=""
+
+	# RzaNs_sVPN_main
+
+	CLIENT_BLOCK="$(sed -n "/^# Client = ${CLIENT_NAME}$/,/^AllowedIPs/ {p; /^AllowedIPs/q}" /etc/wireguard/rzans_svpn_main.conf)"
+
+	if [[ -n "$CLIENT_BLOCK" ]]; then
+		CLIENT_PRIVATE_KEY="$(echo "$CLIENT_BLOCK" | grep '# PrivateKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_PUBLIC_KEY="$(echo "$CLIENT_BLOCK" | grep 'PublicKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_PRESHARED_KEY="$(echo "$CLIENT_BLOCK" | grep 'PresharedKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_IP="$(echo "$CLIENT_BLOCK" | grep 'AllowedIPs =' | cut -d '=' -f 2- | sed 's/ //g' | cut -d '/' -f 1)"
+		echo 'Client (RzaNs_sVPN_main) with that name already exists! Please enter different name for new client'
+	else
+		CLIENT_PRIVATE_KEY="$(wg genkey)"
+		CLIENT_PUBLIC_KEY="$(echo "${CLIENT_PRIVATE_KEY}" | wg pubkey)"
+		CLIENT_PRESHARED_KEY="$(wg genpsk)"
+		BASE_CLIENT_IP="$(grep "^Address" /etc/wireguard/rzans_svpn_main.conf | sed 's/.*= *//' | tr -d ' ,' | cut -d'.' -f1-3 | head -n 1)"
+		for i in {2..255}; do
+			CLIENT_IP="${BASE_CLIENT_IP}.$i"
+			if ! grep -q "$CLIENT_IP" /etc/wireguard/rzans_svpn_main.conf; then
+				break
+			fi
+			if [[ $i == 255 ]]; then
+				echo 'The WireGuard/AmneziaWG subnet can support only 253 clients!'
+				exit 4
+			fi
+		done
+		echo >> "/etc/wireguard/rzans_svpn_main.conf"
+		echo "# Client = ${CLIENT_NAME}
+# PrivateKey = ${CLIENT_PRIVATE_KEY}
+[Peer]
+PublicKey = ${CLIENT_PUBLIC_KEY}
+PresharedKey = ${CLIENT_PRESHARED_KEY}
+AllowedIPs = ${CLIENT_IP}/32
+" >> "/etc/wireguard/rzans_svpn_main.conf"
+		if systemctl is-active --quiet wg-quick@rzans_svpn_main; then
+			wg syncconf rzans_svpn_main <(wg-quick strip rzans_svpn_main 2>/dev/null)
+		fi
+	fi
+
+    # гарантируем каталоги один раз
+    install -d "/opt/rzans_vpn_main/client/rzans_svpn_main" "/opt/rzans_vpn_main/client/rzans_fvpn_main"
+    SERVER_PORT=$SPLIT_PORT
+    render "/etc/wireguard/templates/rzans_svpn_main.conf" \
+        >"/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    chmod 600 "/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+
+	# RzaNs_fVPN_main
+
+	CLIENT_BLOCK="$(sed -n "/^# Client = ${CLIENT_NAME}$/,/^AllowedIPs/ {p; /^AllowedIPs/q}" /etc/wireguard/rzans_fvpn_main.conf)"
+	if [[ -n "$CLIENT_BLOCK" ]]; then
+		CLIENT_PRIVATE_KEY="$(echo "$CLIENT_BLOCK" | grep '# PrivateKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_PUBLIC_KEY="$(echo "$CLIENT_BLOCK" | grep 'PublicKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_PRESHARED_KEY="$(echo "$CLIENT_BLOCK" | grep 'PresharedKey =' | cut -d '=' -f 2- | sed 's/ //g')"
+		CLIENT_IP="$(echo "$CLIENT_BLOCK" | grep 'AllowedIPs =' | cut -d '=' -f 2- | sed 's/ //g' | cut -d '/' -f 1)"
+		echo 'Client (RzaNs_fVPN_main) with that name already exists! Please enter different name for new client'
+	else
+		CLIENT_PRIVATE_KEY="$(wg genkey)"
+		CLIENT_PUBLIC_KEY="$(echo "${CLIENT_PRIVATE_KEY}" | wg pubkey)"
+		CLIENT_PRESHARED_KEY="$(wg genpsk)"
+		BASE_CLIENT_IP="$(grep "^Address" /etc/wireguard/rzans_fvpn_main.conf | sed 's/.*= *//' | tr -d ' ,' | cut -d'.' -f1-3 | head -n 1)"
+		for i in {2..255}; do
+			CLIENT_IP="${BASE_CLIENT_IP}.$i"
+			if ! grep -q "$CLIENT_IP" /etc/wireguard/rzans_fvpn_main.conf; then
+				break
+			fi
+			if [[ $i == 255 ]]; then
+				echo 'The WireGuard/AmneziaWG subnet can support only 253 clients!'
+				exit 5
+			fi
+		done
+		echo >> "/etc/wireguard/rzans_fvpn_main.conf"
+		echo "# Client = ${CLIENT_NAME}
+# PrivateKey = ${CLIENT_PRIVATE_KEY}
+[Peer]
+PublicKey = ${CLIENT_PUBLIC_KEY}
+PresharedKey = ${CLIENT_PRESHARED_KEY}
+AllowedIPs = ${CLIENT_IP}/32
+" >> "/etc/wireguard/rzans_fvpn_main.conf"
+		if systemctl is-active --quiet wg-quick@rzans_fvpn_main; then
+			wg syncconf rzans_fvpn_main <(wg-quick strip rzans_fvpn_main 2>/dev/null)
+		fi
+	fi
+
+    SERVER_PORT=$FULL_PORT
+    render "/etc/wireguard/templates/rzans_fvpn_main.conf" \
+        >"/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    chmod 600 "/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+
+    echo "Profiles (split & full) created in /opt/rzans_vpn_main/client/{rzans_svpn_main,rzans_fvpn_main}"
+	echo
+	echo 'If import fails, shorten filename to 32 chars (Windows) / 15 (Linux/Android/iOS), remove parentheses'
+}
+
+deleteWireGuard(){
+    setServerHost "$WIREGUARD_HOST"
+	echo
+
+	if ! grep -q "# Client = ${CLIENT_NAME}" "/etc/wireguard/rzans_svpn_main.conf" && ! grep -q "# Client = ${CLIENT_NAME}" "/etc/wireguard/rzans_fvpn_main.conf"; then
+		echo "Failed to delete client '$CLIENT_NAME'! Please check if client exists"
+		exit 6
+	fi
+
+	sed -i "/^# Client = ${CLIENT_NAME}$/,/^AllowedIPs/d" /etc/wireguard/rzans_svpn_main.conf
+	sed -i "/^# Client = ${CLIENT_NAME}$/,/^AllowedIPs/d" /etc/wireguard/rzans_fvpn_main.conf
+
+	sed -i '/^$/N;/^\n$/D' /etc/wireguard/rzans_svpn_main.conf
+	sed -i '/^$/N;/^\n$/D' /etc/wireguard/rzans_fvpn_main.conf
+
+    rm -f "/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf" \
+          "/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+
+	if systemctl is-active --quiet wg-quick@rzans_svpn_main; then
+		wg syncconf rzans_svpn_main <(wg-quick strip rzans_svpn_main 2>/dev/null)
+	fi
+
+	if systemctl is-active --quiet wg-quick@rzans_fvpn_main; then
+		wg syncconf rzans_fvpn_main <(wg-quick strip rzans_fvpn_main 2>/dev/null)
+	fi
+
+	echo "Client '$CLIENT_NAME' successfully deleted"
+}
+
+listWireGuard(){
+	[[ -n "$CLIENT_NAME" ]] && return
+	echo
+	echo 'Client names:'
+	cat /etc/wireguard/rzans_svpn_main.conf /etc/wireguard/rzans_fvpn_main.conf | grep -E "^# Client" | cut -d '=' -f 2 | sed 's/ //g' | sort -u
+}
+
+recreate(){
+	echo
+
+    find /opt/rzans_vpn_main/client -type f -delete
+
+	# AmneziaWG
+	if [[ -f /etc/wireguard/key && -f /etc/wireguard/rzans_svpn_main.conf && -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
+		cat /etc/wireguard/rzans_svpn_main.conf /etc/wireguard/rzans_fvpn_main.conf | grep -E "^# Client" | cut -d '=' -f 2 | sed 's/ //g' | sort -u | while read -r CLIENT_NAME; do
+			if [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
+				addWireGuard >/dev/null
+				echo "Profile files recreated for client '$CLIENT_NAME'"
+			else
+				echo "Client name '$CLIENT_NAME' is invalid! No profile files recreated"
+			fi
+		done
+	else
+        CLIENT_NAME="client"
+		echo "Creating server keys and first client: '$CLIENT_NAME'"
+		initWireGuard
+		addWireGuard >/dev/null
+	fi
+}
+
+backup(){
+	echo
+
+	rm -rf /opt/rzans_vpn_main/backup
+	mkdir -p /opt/rzans_vpn_main/backup/wireguard
+
+	cp -r /etc/wireguard/rzans_svpn_main.conf /opt/rzans_vpn_main/backup/wireguard
+	cp -r /etc/wireguard/rzans_fvpn_main.conf /opt/rzans_vpn_main/backup/wireguard
+	cp -r /etc/wireguard/key /opt/rzans_vpn_main/backup/wireguard
+	cp -r /opt/rzans_vpn_main/config /opt/rzans_vpn_main/backup
+
+	BACKUP_FILE="/opt/rzans_vpn_main/backup-$SERVER_IP.tar.gz"
+	tar -czf "$BACKUP_FILE" -C /opt/rzans_vpn_main/backup wireguard config
+	tar -tzf "$BACKUP_FILE" > /dev/null
+
+	rm -rf /opt/rzans_vpn_main/backup
+
+	echo "Clients and config backup (re)created at $BACKUP_FILE"
+}
+
+SETTINGS="/opt/rzans_vpn_main/settings.map"
+
+# --- helpers: чтение тегов из settings.map с дефолтами ----------------------
+get_setting() {  # get_setting TAG DEFAULT
+  local tag="$1" def="$2" line=""
+  [[ -r "$SETTINGS" && -s "$SETTINGS" ]] && \
+    line=$(awk -v t="^\\s*${tag}\\s+" \
+              '$0 ~ t && $0 !~ /^\\s*#/ { $1=""; sub(/^ +/,""); print; exit }' \
+              "$SETTINGS" 2>/dev/null \
+           | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//')
+  [[ -n "$line" ]] && printf '%s' "$line" || printf '%s' "$def"
+}
+
+is_port() { [[ $1 =~ ^[0-9]+$ ]] && (( 1 <= $1 && $1 <= 65535 )); }
+
+# читаем и валидируем SVPN_PORT / FVPN_PORT из settings.map
+# --- порты из settings.map ---------------------------------------------------
+SPLIT_PORT=$(get_setting SVPN_PORT 500);  is_port "$SPLIT_PORT" || SPLIT_PORT=500
+FULL_PORT=$(get_setting FVPN_PORT 4500);  is_port "$FULL_PORT"  || FULL_PORT=4500
+
+# --- выбираем адрес/домен сервера для Endpoint ------------------------------
+# 1) WIREGUARD_HOST из settings.map (если задан и непустой)
+# 2) EXTIP4, если задан явный IP (≠ 0.0.0.0)
+# 3) авто-детект первого глобального IPv4
+
+WIREGUARD_HOST=$(get_setting WIREGUARD_HOST "")
+EXTIP4_RAW=$(get_setting EXTIP4 "0.0.0.0" | awk '{print $1}')  # отбрасываем комментарий
+
+valid_ip4() { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
+
+if [[ -n "$WIREGUARD_HOST" && "$WIREGUARD_HOST" != '""' ]]; then
+  SERVER_HOST=${WIREGUARD_HOST//\"/}
+elif [[ "$EXTIP4_RAW" != "0.0.0.0" ]] && valid_ip4 "$EXTIP4_RAW"; then
+  SERVER_HOST=$EXTIP4_RAW
+else
+  SERVER_HOST=$(ip -o -4 addr show scope global \
+                | awk '{print $4}' | cut -d/ -f1 | head -1)
+  [[ -z "$SERVER_HOST" ]] && { echo 'Global IPv4 not found'; exit 2; }
+fi
+
+# для функций backup() / setServerHost
+SERVER_IP=$SERVER_HOST
+
+OPTION=${1:-}
+CLIENT_NAME=${2:-}
+
+if ! [[ "$OPTION" =~ ^[1-5]$ ]]; then
+	echo
+	echo 'Choose option:'
+	echo '    1) Add client'
+	echo '    2) Delete client'
+	echo '    3) List clients'
+	echo '    4) (Re)create clients profile files'
+	echo '    5) (Re)create clients and config backup'
+	until [[ "$OPTION" =~ ^[1-5]$ ]]; do
+		read -rp 'Option choice [1-5]: ' -e OPTION
+	done
+fi
+
+case "$OPTION" in
+	1)
+		echo "Add client $CLIENT_NAME"
+		askClientName
+		initWireGuard
+		addWireGuard
+		;;
+	2)
+		echo "Delete client $CLIENT_NAME"
+		listWireGuard
+		askClientName
+		deleteWireGuard
+		;;
+	3)
+		echo 'List clients'
+		listWireGuard
+		;;
+	4)
+		echo '(Re)create clients profile files'
+		recreate
+		;;
+	5)
+		echo '(Re)create clients and config backup'
+		backup
+		;;
+esac

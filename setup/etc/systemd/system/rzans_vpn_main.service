@@ -1,0 +1,20 @@
+[Unit]
+Description=RzaNs_VPN_main
+After=multi-user.target
+Wants=multi-user.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rzans_vpn_main
+ExecStartPre=/opt/rzans_vpn_main/up.sh
+ExecStart=/opt/rzans_vpn_main/proxy.py
+ExecStop=/opt/rzans_vpn_main/down.sh
+ExecStopPost=-/bin/sleep 1
+Restart=on-failure
+RestartSec=3
+LimitNPROC=infinity
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
