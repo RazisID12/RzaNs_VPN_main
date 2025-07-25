@@ -59,15 +59,20 @@ initWireGuard(){
     source /etc/wireguard/key
 
     # 2) Всегда убеждаемся, что оба серверных конфига присутствуют
+
     if [[ ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
-        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_svpn_main.conf"
-        sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/" /etc/wireguard/rzans_svpn_main.conf
+        render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/svpn.tmp
+        sed -i -E "s|^Address *=.*|Address = ${SVPN_ADDR}|"       /tmp/svpn.tmp
+        mv /tmp/svpn.tmp /etc/wireguard/rzans_svpn_main.conf
     fi
+    sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/"     /etc/wireguard/rzans_svpn_main.conf
 
     if [[ ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
-        render "/etc/wireguard/templates/rzans_vpn_main.conf" > "/etc/wireguard/rzans_fvpn_main.conf"
-        sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"  /etc/wireguard/rzans_fvpn_main.conf
+        render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/fvpn.tmp
+        sed -i -E "s|^Address *=.*|Address = ${FVPN_ADDR}|"       /tmp/fvpn.tmp
+        mv /tmp/fvpn.tmp /etc/wireguard/rzans_fvpn_main.conf
     fi
+    sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"      /etc/wireguard/rzans_fvpn_main.conf
 }
 
 addWireGuard(){
@@ -129,9 +134,10 @@ AllowedIPs = ${CLIENT_IP}/32
     # гарантируем каталоги один раз
     install -d "/opt/rzans_vpn_main/client/rzans_svpn_main" "/opt/rzans_vpn_main/client/rzans_fvpn_main"
     SERVER_PORT=$SPLIT_PORT
-    render "/etc/wireguard/templates/rzans_svpn_main.conf" \
-        >"/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
-    chmod 600 "/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    export SVPN_DNS_IP SVPN_ALLOWED
+    SPLIT_FILE="/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    render "/etc/wireguard/templates/rzans_svpn_main.conf" >"$SPLIT_FILE"
+    chmod 600 "$SPLIT_FILE"
 
 	# RzaNs_fVPN_main
 
@@ -171,9 +177,10 @@ AllowedIPs = ${CLIENT_IP}/32
 	fi
 
     SERVER_PORT=$FULL_PORT
-    render "/etc/wireguard/templates/rzans_fvpn_main.conf" \
-        >"/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
-    chmod 600 "/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    # при желании аналогично экспортируем FVPN_ALLOWED
+    FULL_FILE="/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
+    render "/etc/wireguard/templates/rzans_fvpn_main.conf" >"$FULL_FILE"
+    chmod 600 "$FULL_FILE"
 
     echo "Profiles (split & full) created in /opt/rzans_vpn_main/client/{rzans_svpn_main,rzans_fvpn_main}"
 	echo
@@ -304,6 +311,21 @@ is_port() { [[ $1 =~ ^[0-9]+$ ]] && (( 1 <= $1 && $1 <= 65535 )); }
 SPLIT_PORT=$(get_setting SVPN_PORT 500);  is_port "$SPLIT_PORT" || SPLIT_PORT=500
 FULL_PORT=$(get_setting FVPN_PORT 4500);  is_port "$FULL_PORT"  || FULL_PORT=4500
 
+# --- подсети из settings.map -------------------------------------------------
+SVPN_NET4=$(get_setting SVPN_NET4 "10.29.8.0/24")
+FVPN_NET4=$(get_setting FVPN_NET4 "10.28.8.0/24")
+VPN_MAP_DST4=$(get_setting VPN_MAP_DST4 "10.30.0.0/15")
+
+# helper: 10.29.8.0/24 → 10.29.8.1/24
+net_to_srv() {
+    local ip=${1%/*} mask=${1##*/}
+    IFS='.' read -r a b c d <<<"$ip"
+    printf '%s.%s.%s.1/%s' "$a" "$b" "$c" "$mask"
+}
+SVPN_ADDR="$(net_to_srv "$SVPN_NET4")"
+FVPN_ADDR="$(net_to_srv "$FVPN_NET4")"
+SVPN_DNS_IP="${SVPN_ADDR%/*}"
+SVPN_ALLOWED="${SVPN_NET4}, ${VPN_MAP_DST4}\${IPS}"
 # --- выбираем адрес/домен сервера для Endpoint ------------------------------
 # 1) WIREGUARD_HOST из settings.map (если задан и непустой)
 # 2) EXTIP4, если задан явный IP (≠ 0.0.0.0)
