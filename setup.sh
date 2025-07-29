@@ -493,14 +493,6 @@ apt-get clean
 # Клонируем репозиторий и устанавливаем dnslib
 DNSLIB_DIR="$TMP_DIR/dnslib"
 git clone https://github.com/paulc/dnslib.git "$DNSLIB_DIR"
-# Убедимся, что pip поддерживает --break-system-packages (pip ≥ 23)
-if ! python3 - <<'PY' 2>/dev/null | grep -q true
-import sys, pip, re
-print('true' if re.search(r'break-system-packages', pip.__doc__ or '') else 'false')
-PY
-then
-  python3 -m pip install --break-system-packages -U pip
-fi
 # Ставим системно: Python гарантированно найдёт пакет при запуске от root
 python3 -m pip install --force-reinstall --no-deps --break-system-packages "$DNSLIB_DIR"
 
