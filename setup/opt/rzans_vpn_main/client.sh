@@ -64,21 +64,24 @@ add_agh_client() {
       --arg ip   "$ip" \
       --arg nick "$nick" \
       --arg port "$port" \
-      --arg uuid "$uuid" '.clients.persistent //= [] |
-        (.clients.persistent[]? | select(.ids | index(strenv(ip)))) as $c
-        | if $c then
-            ($c.name = strenv(nick)) |
-            ($c.upstreams = ["127.0.0.1:" + strenv(port)])
-          else
-            .clients.persistent += [{
-              name: strenv(nick),
-              ids: [strenv(ip)],
-              upstreams: ["127.0.0.1:" + strenv(port)],
-              uid: strenv(uuid),
-              use_global_settings: true
-            }]
-          end
-' -i "$agh"
+      --arg uuid "$uuid" \
+      '.clients.persistent //= []                                             |
+       (.clients.persistent[]?                                                |
+          select((.ids        // []) | index(strenv(ip)) and
+                 (.upstreams  // []) | index("127.0.0.1:" + strenv(port))))   |
+       as $c                                                                  |
+       if $c then                                                             |
+         ($c.name = strenv(nick)) |                                           |
+         ($c.upstreams = ["127.0.0.1:" + strenv(port)])                       |
+       else                                                                   |
+         .clients.persistent += [{                                            |
+           name:              strenv(nick),                                   |
+           ids:               [strenv(ip)],                                   |
+           upstreams:         ["127.0.0.1:" + strenv(port)],                  |
+           uid:               strenv(uuid),                                   |
+           use_global_settings: true                                          |
+         }]                                                                   |
+       end' -i "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
