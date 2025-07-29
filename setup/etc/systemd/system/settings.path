@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch /opt/rzans_vpn_main/settings.map and auto apply on change
+
+[Path]
+PathChanged=/opt/rzans_vpn_main/settings.map
+
+[Install]
+WantedBy=multi-user.target
+Unit=apply_settings.service

@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply settings
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/settings.sh --apply-changed
+
+StandardOutput=journal
+StandardError=inherit
