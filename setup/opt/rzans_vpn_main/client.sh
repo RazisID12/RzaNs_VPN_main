@@ -2,7 +2,7 @@
 # chmod +x client.sh && ./client.sh [1-5] [имя_клиента]
 #
 set -eEuo pipefail
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 027
 
 handle_error() {
