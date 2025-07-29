@@ -2,7 +2,7 @@
 # ==============================================================================
 # Скрипт для установки на своём сервере RzaNs_VPN_main
 # ==============================================================================
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 027 
 export LC_ALL=C
 set -euo pipefail
@@ -185,7 +185,7 @@ rm -f /opt/generate.sh
 rm -f /opt/create-swap.sh
 rm -f /opt/add-client.sh
 rm -f /opt/delete-client.sh
-rm -f /opt/*.conf
+rm -f /opt/rzans_*.conf
 rm -rf --preserve-root /opt/vpn
 rm -rf --preserve-root /opt/easy-rsa-ipsec
 rm -rf --preserve-root /opt/.gnupg
@@ -261,7 +261,6 @@ apt-get update
 apt-get install --reinstall -y git iptables gawk knot-resolver idn sipcalc python3-pip \
                               wireguard-tools diffutils socat lua-cqueues ipset
 
-# ── yq v4 (mikefarah) — нужен для корректного YAML‑merge в agh_heal ──────────
 #  `yq --version` → «yq (…github…) version 4.44.2», поэтому ищем «version 4».
 if ! command -v yq >/dev/null 2>&1 \
    || ! yq --version 2>/dev/null | grep -Eq 'version[[:space:]]+4(\.|$)'; then
@@ -289,7 +288,6 @@ After=network-online.target wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn
       kresd@1.service kresd@2.service
 Wants=network-online.target wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
 EOF
-systemctl daemon-reload
 
 # ==== единственное клонирование репозитория =====
 REPO_TMP="$TMP_DIR/rzans_vpn_main"
@@ -364,10 +362,8 @@ ERRORS=""
       echo "AdGuard Home service already exists — updating binary (start deferred)."
       systemctl stop AdGuardHome 2>/dev/null || true
       chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
-      systemctl daemon-reload
   else
       "$AGH_BIN" -s install
-      systemctl daemon-reload
       # после установки удостоверимся, что у каталога корректный владелец
       if id adguardhome &>/dev/null; then
         chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
@@ -701,8 +697,10 @@ for f in /etc/wireguard/templates/rzans_svpn_main.conf; do
 done
 shopt -u nullglob
 
-# Загружаем и создаем списки исключений IP-адресов
+# Загружаем и создаем списки исключений IP‑адресов
+export NO_REBOOT=1            # <‑‑ подавляем авто‑ребут внутри update.sh
 /opt/rzans_vpn_main/doall.sh ip
+unset NO_REBOOT               # на всякий случай
 
 # гарантируем, что каталоги уже существуют
 mkdir -p /etc/wireguard \

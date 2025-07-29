@@ -314,8 +314,8 @@ if command -v ipset >/dev/null; then
 fi
 
 # ── автоматический reboot, если ядро/glibc потребуют перезагрузки ───────────
-if [[ -f /var/run/reboot-required ]]; then
+# ── автоматический reboot (отключаем, если NO_REBOOT=1) ─────────────────────
+if [[ -f /var/run/reboot-required && "${NO_REBOOT:-0}" != "1" ]]; then
     echo -e '\e[1;33m[SYS] Reboot required — system will reboot in 60 seconds.\e[0m'
-    # даём минуту на graceful завершение активных подключений
     shutdown -r +1 'System reboot (updates applied)' || reboot --no-wall
 fi
