@@ -591,12 +591,6 @@ clients:
     dhcp: true
     hosts: true
   persistent: []
-      name: ""
-      ids:
-        - 
-      upstreams:
-        - 
-      uid: 
 log:
   enabled: true
   file: "/var/log/adguardhome/access.log"
