@@ -65,16 +65,16 @@ add_agh_client() {
       --arg nick "$nick" \
       --arg port "$port" \
       --arg uuid "$uuid" '.clients.persistent //= [] |
-        (.clients.persistent[]? | select(.ids | index($ip))) as $c
+        (.clients.persistent[]? | select(.ids | index(strenv(ip)))) as $c
         | if $c then
-            ($c.name = $nick) |
-            ($c.upstreams = ["127.0.0.1:" + $port])
+            ($c.name = strenv(nick)) |
+            ($c.upstreams = ["127.0.0.1:" + strenv(port)])
           else
             .clients.persistent += [{
-              name: $nick,
-              ids: [$ip],
-              upstreams: ["127.0.0.1:" + $port],
-              uid: $uuid,
+              name: strenv(nick),
+              ids: [strenv(ip)],
+              upstreams: ["127.0.0.1:" + strenv(port)],
+              uid: strenv(uuid),
               use_global_settings: true
             }]
           end
@@ -91,7 +91,7 @@ remove_agh_client() {
     local nick="$1" agh=/opt/AdGuardHome/AdGuardHome.yaml
     [[ -f $agh && -n $nick ]] || return 0
 
-    yq eval --arg nick "$nick" '.clients.persistent |= map(select(.name != $nick))' \
+    yq eval --arg nick "$nick" '.clients.persistent |= map(select(.name != strenv(nick)))' \
       -i "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
