@@ -499,7 +499,7 @@ import sys, pip, re
 print('true' if re.search(r'break-system-packages', pip.__doc__ or '') else 'false')
 PY
 then
-  python3 -m pip install -U pip
+  python3 -m pip install --break-system-packages -U pip
 fi
 # Ставим системно: Python гарантированно найдёт пакет при запуске от root
 python3 -m pip install --force-reinstall --no-deps --break-system-packages "$DNSLIB_DIR"
