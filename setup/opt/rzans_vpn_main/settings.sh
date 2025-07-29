@@ -892,6 +892,10 @@ apply_settings_all() {
 }
 
 # ── CLI‑интерфейс ───────────────────────────────────────────────
+# если файл подключён через «source», а не запущен напрямую —
+#    загружаем функции и выходим без CLI‑логики
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+
 case "${1:-}" in
   --apply)         shift; apply_settings_all "$@";           exit $? ;;
   --apply-changed) shift; apply_settings_all "$@";           exit $? ;;  # точечное → тот же код
