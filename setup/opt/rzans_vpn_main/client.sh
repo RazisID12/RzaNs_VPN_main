@@ -60,12 +60,11 @@ add_agh_client() {
     local port uuid; [[ $mode == split ]] && port=5353 || port=5354
     uuid=$(uuidgen)
 
-    yq eval -i \
+    yq eval \
       --arg ip   "$ip" \
       --arg nick "$nick" \
       --arg port "$port" \
-      --arg uuid "$uuid" '
-        .clients.persistent //= [] |
+      --arg uuid "$uuid" '.clients.persistent //= [] |
         (.clients.persistent[]? | select(.ids | index($ip))) as $c
         | if $c then
             ($c.name = $nick) |
@@ -79,7 +78,7 @@ add_agh_client() {
               use_global_settings: true
             }]
           end
-      ' "$agh"
+' -i "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
@@ -92,10 +91,8 @@ remove_agh_client() {
     local nick="$1" agh=/opt/AdGuardHome/AdGuardHome.yaml
     [[ -f $agh && -n $nick ]] || return 0
 
-    yq -i '
-      .clients.persistent |=
-        (map(select(.name != "'"$nick"'")))
-    ' "$agh"
+    yq eval --arg nick "$nick" '.clients.persistent |= map(select(.name != $nick))' \
+      -i "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
