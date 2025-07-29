@@ -60,21 +60,25 @@ add_agh_client() {
     local port uuid; [[ $mode == split ]] && port=5353 || port=5354
     uuid=$(uuidgen)
 
-    yq -i "
-      (.clients.persistent[]? | select(.ids | index(\"$ip\"))) as \$c
-      | if \$c then
-          (\$c.name = \"$nick\") |
-          (\$c.upstreams = [\"127.0.0.1:$port\"])
+    yq eval -i '
+      # гарантируем, что массив существует
+      .clients.persistent //= [] |
+
+      # ищем существующий элемент, где ids содержит IP
+      (.clients.persistent[]? | select(.ids | index("'"$ip"'"))) as $c
+      | if $c then
+          ($c.name = "'"$nick"'") |
+          ($c.upstreams = ["127.0.0.1:'"$port"'"])
         else
           .clients.persistent += [{
-            name: \"$nick\",
-            ids: [\"$ip\"],
-            upstreams: [\"127.0.0.1:$port\"],
-            uid: \"$uuid\",
+            name: "'"$nick"'",
+            ids: ["'"$ip"'"],
+            upstreams: ["127.0.0.1:'"$port"'"],
+            uid: "'"$uuid"'",
             use_global_settings: true
           }]
         end
-    " "$agh"
+    ' "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
