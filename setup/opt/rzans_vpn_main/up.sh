@@ -194,8 +194,24 @@ elif [[ "${1:-}" == "close80" ]]; then
 fi
 
 # ── 2. Переменные ──────────────────────────────────────────────────────────────
-INTERFACE=$(ip route | awk '/^default/{print $5;exit}')
-[[ -z "$INTERFACE" ]] && { echo 'Default interface not found'; exit 1; }
+# 0) приоритет — EXT_IF из settings.map (если задан)
+INTERFACE=$(settings_get_tag EXT_IF "")
+
+# 1) иначе ждём появления default‑маршрута IPv4 до 30 с
+if [[ -z $INTERFACE ]]; then
+  for i in {1..30}; do
+    INTERFACE=$(ip -4 route | awk '/^default/{print $5;exit}')
+    [[ -n $INTERFACE ]] && break
+    sleep 1
+  done
+fi
+
+# 2) если всё ещё пусто — берём первый iface с глобальным IPv4
+[[ -z $INTERFACE ]] && \
+  INTERFACE=$(ip -o -4 addr show scope global | awk '{print $2;exit}')
+
+# финальная проверка
+[[ -z $INTERFACE ]] && { echo "Cannot determine external interface"; exit 1; }
 
 # 1. внешний IP: приоритет EXTIP из settings.map,
 if [[ -n "$EXT4_IP_CFG" && "$EXT4_IP_CFG" != "0.0.0.0" ]]; then
