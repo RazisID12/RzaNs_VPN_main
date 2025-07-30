@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck shell=bash
+set -euo pipefail
+IFS=$'\n\t'
 
 # фиксируем POSIX-локаль, чтобы регэкспы/пробелы в awk/sed вели себя одинаково
 export LC_ALL=C
@@ -9,7 +11,13 @@ export LC_ALL=C
 tmp=""; old=""
 
 # Точка правды для пути к settings.map (можно переопределить до source)
+# путь к settings.map
 : "${SETTINGS:=/opt/rzans_vpn_main/settings.map}"
+
+# директория и файлы шаблонов AdGuard Home
+TEMPLATE_DIR=/opt/rzans_vpn_main/config/templates
+AGH_TMPL_BASE=${TEMPLATE_DIR}/AdGuardHome.yaml
+AGH_TMPL_PATCH=${TEMPLATE_DIR}/agh_dynamic_patch.yaml
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Публичные функции:
@@ -30,6 +38,25 @@ tmp=""; old=""
 #                         — установить: SVPN_IP, FVPN_IP, SVPN_ADDR, FVPN_ADDR,
 #                           SVPN_DNS_IP, FVPN_DNS_IP.
 # ──────────────────────────────────────────────────────────────────────────────
+
+# ——— helpers ————————————————————————————————————————————————————————————————
+_have() { command -v "$1" >/dev/null 2>&1; }
+
+# Унифицированный рендер шаблонов: предпочитаем функцию/утилиту render,
+# иначе — envsubst. Возвращает результат в stdout.
+_render() {
+  local src="$1"
+  if declare -F render >/dev/null 2>&1; then
+    render "$src"
+  elif _have render; then
+    command render "$src"
+  elif _have envsubst; then
+    envsubst < "$src"
+  else
+    echo "ERROR: no renderer (need 'render' or 'envsubst')" >&2
+    return 1
+  fi
+}
 
 settings_heal() {
   _settings__ensure_placeholder
@@ -419,195 +446,6 @@ _settings__restore_full_from_template() {
 # AdGuard Home: шаблон и самолечение (полный YAML + заполнение ключей)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Полный дефолтный шаблон, как вы прислали. Значимые поля ниже будут
-# перезаписаны программно: http.address (оставляем как в шаблоне),
-# dns.bind_hosts, dns.upstream_dns, dns.bootstrap_dns, dns.fallback_dns,
-# dns.allowed_clients.
-agh_template() {
-  cat <<'YAML'
-http:
-  pprof:
-    port: 0
-    enabled: false
-  address: 127.0.0.1:80
-  session_ttl: 720h
-users:
-  - name:
-    password:
-auth_attempts: 5
-block_auth_min: 15
-http_proxy: ""
-language: ""
-theme: auto
-dns:
-  bind_hosts:
-    - 
-  port: 53
-  anonymize_client_ip: false
-  ratelimit: 20
-  ratelimit_subnet_len_ipv4: 24
-  ratelimit_subnet_len_ipv6: 56
-  ratelimit_whitelist: []
-  refuse_any: true
-  upstream_dns:
-    - 
-  upstream_dns_file: ""
-  bootstrap_dns:
-    - 
-  fallback_dns: []
-  upstream_mode: load_balance
-  fastest_timeout: 1s
-  allowed_clients:
-    - 
-  disallowed_clients: []
-  blocked_hosts:
-    - version.bind
-    - id.server
-    - hostname.bind
-  trusted_proxies:
-    - 127.0.0.0/8
-    - ::1/128
-  cache_size: 4194304
-  cache_ttl_min: 0
-  cache_ttl_max: 0
-  cache_optimistic: false
-  bogus_nxdomain: []
-  aaaa_disabled: false
-  enable_dnssec: false
-  edns_client_subnet:
-    custom_ip: ""
-    enabled: false
-    use_custom: false
-  max_goroutines: 300
-  handle_ddr: true
-  ipset: []
-  ipset_file: ""
-  bootstrap_prefer_ipv6: false
-  upstream_timeout: 10s
-  private_networks: []
-  use_private_ptr_resolvers: true
-  local_ptr_upstreams: []
-  use_dns64: false
-  dns64_prefixes: []
-  serve_http3: false
-  use_http3_upstreams: false
-  serve_plain_dns: true
-  hostsfile_enabled: true
-  pending_requests:
-    enabled: true
-tls:
-  enabled: false
-  server_name: ""
-  force_https: false
-  port_https: 0
-  port_dns_over_tls: 0
-  port_dns_over_quic: 0
-  port_dnscrypt: 0
-  dnscrypt_config_file: ""
-  allow_unencrypted_doh: false
-  certificate_chain: ""
-  private_key: ""
-  certificate_path: ""
-  private_key_path: ""
-  strict_sni_check: false
-querylog:
-  dir_path: ""
-  ignored: []
-  interval: 2160h
-  size_memory: 1000
-  enabled: true
-  file_enabled: true
-statistics:
-  dir_path: ""
-  ignored: []
-  interval: 24h
-  enabled: true
-filters:
-  - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
-    name: AdGuard DNS filter
-    id: 1
-  - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
-    name: AdAway Default Blocklist
-    id: 2
-whitelist_filters: []
-user_rules: []
-dhcp:
-  enabled: false
-  interface_name: ""
-  local_domain_name: lan
-  dhcpv4:
-    gateway_ip: ""
-    subnet_mask: ""
-    range_start: ""
-    range_end: ""
-    lease_duration: 86400
-    icmp_timeout_msec: 1000
-    options: []
-  dhcpv6:
-    range_start: ""
-    lease_duration: 86400
-    ra_slaac_only: false
-    ra_allow_slaac: false
-filtering:
-  blocking_ipv4: ""
-  blocking_ipv6: ""
-  blocked_services:
-    schedule:
-      time_zone: Local
-    ids: []
-  protection_disabled_until: null
-  safe_search:
-    enabled: false
-    bing: true
-    duckduckgo: true
-    ecosia: true
-    google: true
-    pixabay: true
-    yandex: true
-    youtube: true
-  blocking_mode: default
-  parental_block_host: family-block.dns.adguard.com
-  safebrowsing_block_host: standard-block.dns.adguard.com
-  rewrites: []
-  safe_fs_patterns:
-    - /opt/AdGuardHome/userfilters/*
-  safebrowsing_cache_size: 1048576
-  safesearch_cache_size: 1048576
-  parental_cache_size: 1048576
-  cache_time: 30
-  filters_update_interval: 24
-  blocked_response_ttl: 10
-  filtering_enabled: true
-  parental_enabled: false
-  safebrowsing_enabled: false
-  protection_enabled: true
-clients:
-  runtime_sources:
-    whois: true
-    arp: true
-    rdns: true
-    dhcp: true
-    hosts: true
-  persistent: []
-log:
-  enabled: true
-  file: "/var/log/adguardhome/access.log"
-  max_backups: 0
-  max_size: 100
-  max_age: 3
-  compress: false
-  local_time: false
-  verbose: false
-os:
-  group: ""
-  user: ""
-  rlimit_nofile: 0
-schema_version: 29
-YAML
-}
-
 # приводим любое постороннее значение к 1..3
 _normalize_upstream_sel() {
   case "$1" in 1|2|3) echo "$1" ;; *) echo 1 ;; esac
@@ -666,83 +504,71 @@ _update_f2b_ignoreip() {
 }
 
 agh_heal() {
-  local AGH_YAML="/opt/AdGuardHome/AdGuardHome.yaml"
-  local TMP OLD
+  local AGH_YAML=/opt/AdGuardHome/AdGuardHome.yaml
   mkdir -p /opt/AdGuardHome
-  TMP=$(mktemp); OLD=$(mktemp)
-  cp -f "$AGH_YAML" "$OLD" 2>/dev/null || :
+  # инструменты, без которых merge невозможен
+  _have yq || { echo "ERROR: yq not found"; return 1; }
 
-  # Читаем значения из settings.map (без зависимости от read_settings)
+  # ── 1. собираем переменные из settings.map ──────────────────────
   local SVPN_NET4 FVPN_NET4 USEL v4a v4b v6a v6b
-  SVPN_NET4="$(settings_get_tag SVPN_NET4 "10.29.8.0/24")"
-  FVPN_NET4="$(settings_get_tag FVPN_NET4 "10.28.8.0/24")"
-  USEL="$(_normalize_upstream_sel "$(settings_get_tag UPSTREAM_DNS 1)")"
+  SVPN_NET4=$(settings_get_tag SVPN_NET4 "10.29.8.0/24")
+  FVPN_NET4=$(settings_get_tag FVPN_NET4 "10.28.8.0/24")
+  USEL=$(_normalize_upstream_sel "$(settings_get_tag UPSTREAM_DNS 1)")
   read -r v4a v4b v6a v6b <<<"$(upstream_pair_full "$USEL")"
+  vpn_addrs_from_cidrs "$SVPN_NET4" "$FVPN_NET4" || return 1
 
-  # Вычисляем IP‑адреса интерфейсов VPN
-  vpn_addrs_from_cidrs "$SVPN_NET4" "$FVPN_NET4" || { rm -f "$TMP" "$OLD"; return 1; }
+  # bootstrap (v4+v6) — одной строкой; TRUST_BLOCK — с реальными \n и отступами
+  local BOOTSTRAP="${v4a} ${v4b} ${v6a} ${v6b}"
+  local TRUST_BLOCK="" _trust_list=""
+  _trust_list="$( { _settings__collect_trust 4; _settings__collect_trust 6; } || true )"
+  if [[ -n "${_trust_list}" ]]; then
+    while IFS= read -r _t; do
+      [[ -n "${_t}" ]] && TRUST_BLOCK+=$'    - '"${_t}"$'\n'
+    done <<< "${_trust_list}"
+    # убрать последний перевод строки
+    TRUST_BLOCK="${TRUST_BLOCK%$'\n'}"
+  fi
 
-  # TRUST‑списки (в строку, разделитель — пробел)
-  local TRUST4 TRUST6
-  TRUST4="$(_settings__collect_trust 4 | tr '\n' ' ')"
-  TRUST6="$(_settings__collect_trust 6 | tr '\n' ' ')"
+  # ── 2. рендерим динамический патч ───────────────────────────────
+  local PTMP; PTMP=$(mktemp)
+  {
+    export SVPN_IP FVPN_IP SVPN_NET4 FVPN_NET4
+    export BOOTSTRAP TRUST_BLOCK
+    _render "$AGH_TMPL_PATCH"
+  } >"$PTMP"
 
-  local BOOTS="$v4a $v4b $v6a $v6b"       # v4 + v6
-
-  # Строим YAML на базе шаблона, заполняя нужные секции.
-  awk \
-    -v b1="$SVPN_IP" -v b2="$FVPN_IP" \
-    -v boots="$BOOTS" \
-    -v s_net="$SVPN_NET4" -v f_net="$FVPN_NET4" \
-    -v t4="$TRUST4" -v t6="$TRUST6" '
-    BEGIN {
-      split(boots, BOOT, /[[:space:]]+/);
-      n_boot=0;
-      for (i=1; i in BOOT; i++) {
-        if (BOOT[i]!="") { n_boot++; BOOT_U[n_boot]=BOOT[i]; }
-      }
-      split(t4, T4, /[[:space:]]+/);
-      split(t6, T6, /[[:space:]]+/);
-      # переносимо считаем количество элементов (mawk/BusyBox awk совместимость)
-      n4=0; for(i=1; i in T4; i++) n4++;
-      n6=0; for(i=1; i in T6; i++) n6++;
-      skip_list=0
-    }
-    # ключевые секции
-    /^  bind_hosts:/      { print; printf("    - %s\n", b1); printf("    - %s\n", b2); skip_list=1; next }
-    # AGH всегда проксирует в оба kresd-инстанса: 5353 (=kresd@1), 5354 (=kresd@2)
-    /^  upstream_dns:/    { print; print "    - 127.0.0.1:5353"; print "    - 127.0.0.1:5354"; skip_list=1; next }
-    /^  bootstrap_dns:/   { print; for(i=1;i<=n_boot;i++) printf("    - %s\n", BOOT_U[i]); skip_list=1; next }
-    /^  fallback_dns:/    { print "  fallback_dns:"; for(i=1;i<=n_boot;i++) printf("    - %s\n", BOOT_U[i]); next }
-    /^  allowed_clients:/ {
-                             print;
-                             printf("    - %s\n", s_net);
-                             printf("    - %s\n", f_net);
-                             for(i=1;i<=n4;i++) if(T4[i]!="") printf("    - %s\n", T4[i]);
-                             for(i=1;i<=n6;i++) if(T6[i]!="") printf("    - %s\n", T6[i]);
-                             skip_list=1; next
-                           }
-    # Пропускаем пустые элементы списков из шаблона (строки вида "    -")
-    skip_list && /^[[:space:]]*-[[:space:]]*$/ { next }
-    # Сброс режима пропуска при новом разделe того же уровня
-    /^[^[:space:]]/ || /^[[:space:]]{2}[a-z]/ { skip_list=0 }
-    { print }
-  ' < <(agh_template) >"$TMP"
-
-  # Если установлен yq — мерджим: СТАРЫЙ * НОВЫЙ → новые значения для управляемых ключей,
-  # при этом сохраняем пользовательские секции из старого файла.
-  if command -v yq &>/dev/null && [[ -s "$OLD" ]]; then
-    yq eval-all 'select(fi==0) * select(fi==1)' "$OLD" "$TMP" >"$AGH_YAML"
+  # ── 3. merge: base * patch * (optional)old ──────────────────────
+  if [[ -s $AGH_YAML ]]; then
+    # есть непустой старый файл → трёхсторонний merge
+    if _have sponge; then
+      yq ea '
+      select(fi==0) *          # базовый шаблон
+      select(fi==1) *          # динамический патч
+      select(fi==2)            # существующий YAML (кастом)
+      '  "$AGH_TMPL_BASE" "$PTMP" "$AGH_YAML" | sponge "$AGH_YAML"
+    else
+      local _tmp; _tmp=$(mktemp)
+      yq ea '
+      select(fi==0) * select(fi==1) * select(fi==2)
+      ' "$AGH_TMPL_BASE" "$PTMP" "$AGH_YAML" >"$_tmp" && mv -f "$_tmp" "$AGH_YAML"
+    fi
   else
-    cp "$TMP" "$AGH_YAML"
-   fi
+    # старого файла нет или он пустой → двусторонний merge (base * patch)
+    if _have sponge; then
+      yq ea 'select(fi==0) * select(fi==1)' \
+            "$AGH_TMPL_BASE" "$PTMP" | sponge "$AGH_YAML"
+    else
+      local _tmp; _tmp=$(mktemp)
+      yq ea 'select(fi==0) * select(fi==1)' \
+            "$AGH_TMPL_BASE" "$PTMP" >"$_tmp" && mv -f "$_tmp" "$AGH_YAML"
+    fi
+  fi
+  rm -f "$PTMP"
 
-  # гарантируем наличие каталога и файла логов, с корректными правами
+  chmod 600 "$AGH_YAML"
   install -d -m 755 /var/log/adguardhome
   : > /var/log/adguardhome/access.log
   chown adguardhome:adguardhome /var/log/adguardhome /var/log/adguardhome/access.log 2>/dev/null || true
-  chmod 600 "$AGH_YAML"
-  rm -f "$TMP" "$OLD"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

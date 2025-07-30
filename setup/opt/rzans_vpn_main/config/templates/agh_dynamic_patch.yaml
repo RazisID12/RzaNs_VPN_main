@@ -1,0 +1,19 @@
+http:
+  address: 127.0.0.1:80
+
+dns:
+  bind_hosts:
+    - ${SVPN_IP}
+    - ${FVPN_IP}
+
+  upstream_dns:
+    - 127.0.0.1:5353
+    - 127.0.0.1:5354
+
+  bootstrap_dns: [ ${BOOTSTRAP} ]
+  fallback_dns:  [ ${BOOTSTRAP} ]
+
+  allowed_clients:
+    - ${SVPN_NET4}
+    - ${FVPN_NET4}
+${TRUST_BLOCK}

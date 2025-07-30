@@ -20,6 +20,30 @@ export LC_ALL=C
 # используем общие helpers из settings.sh (settings_get_tag, vpn_addrs_from_cidrs и т.п.)
 . /opt/rzans_vpn_main/settings.sh
 
+# ——— helpers ——————————————————————————————————————————————————
+_have() { command -v "$1" >/dev/null 2>&1; }
+
+# единый рендерер (если settings.sh уже объявил — используем его)
+if ! declare -F _render >/dev/null 2>&1; then
+  _render() {
+    if declare -F render >/dev/null 2>&1; then
+      render "$1"
+    elif _have render; then
+      command render "$1"
+    elif _have envsubst; then
+      envsubst < "$1"
+    else
+      echo "ERROR: no template renderer (need 'render' или 'envsubst')" >&2
+      return 1
+    fi
+  }
+fi
+
+# проверяем критичные внешние бинари (yq — для AGH, uuidgen/wg — для W‑G)
+for bin in yq uuidgen wg; do
+  _have "$bin" || { echo "ERROR: '$bin' not found, abort." >&2; exit 127; }
+done
+
 askClientName(){
 	if ! [[ "$CLIENT_NAME" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
 		echo
@@ -33,18 +57,6 @@ askClientName(){
 # устанавливаем SERVER_HOST (домен или IP) для Endpoint-а и имени файла
 setServerHost(){
     [[ -n "$1" ]] && SERVER_HOST="$1" || SERVER_HOST="$SERVER_IP"
-}
-
-render() {
-	local IFS=''
-	while read -r line; do
-		while [[ "$line" =~ (\$\{[a-zA-Z_][a-zA-Z_0-9]*\}) ]]; do
-			local LHS="${BASH_REMATCH[1]}"
-			local RHS="$(eval echo "\"$LHS\"")"
-			line="${line//$LHS/$RHS}"
-		done
-		echo "$line"
-	done < "$1"
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -94,8 +106,13 @@ remove_agh_client() {
     local nick="$1" agh=/opt/AdGuardHome/AdGuardHome.yaml
     [[ -f $agh && -n $nick ]] || return 0
 
-    yq eval --arg nick "$nick" '.clients.persistent |= map(select(.name != strenv(nick)))' \
-      -i "$agh"
+    # безопасно обрабатываем отсутствие блока clients.persistent
+    yq eval --arg nick "$nick" '
+      .clients.persistent = (
+        (.clients.persistent // [])        # если блока нет → создаём []
+        | map(select(.name != strenv(nick)))  # фильтруем по имени
+      )
+    ' -i "$agh"
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
@@ -117,14 +134,14 @@ initWireGuard(){
     # 2) Всегда убеждаемся, что оба серверных конфига присутствуют
 
     if [[ ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
-        render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/svpn.tmp
+        _render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/svpn.tmp
         sed -i -E "s|^Address *=.*|Address = ${SVPN_ADDR}|"       /tmp/svpn.tmp
         mv /tmp/svpn.tmp /etc/wireguard/rzans_svpn_main.conf
     fi
     sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/"     /etc/wireguard/rzans_svpn_main.conf
 
     if [[ ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
-        render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/fvpn.tmp
+        _render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/fvpn.tmp
         sed -i -E "s|^Address *=.*|Address = ${FVPN_ADDR}|"       /tmp/fvpn.tmp
         mv /tmp/fvpn.tmp /etc/wireguard/rzans_fvpn_main.conf
     fi
@@ -145,9 +162,13 @@ addWireGuard(){
     fi
 	echo
 
-	source /etc/wireguard/key
+# ключи могли ещё не существовать при опции 2/3/5
+    [[ -f /etc/wireguard/key ]] && source /etc/wireguard/key || true
     # файл /etc/wireguard/ips нужен не всегда: читаем безопасно
-    [[ -f /etc/wireguard/ips ]] && IPS="$(cat /etc/wireguard/ips)" || IPS=""
+    if [[ -f /etc/wireguard/ips ]]; then
+        IPS=$(tr -s ' \n' ',' </etc/wireguard/ips | sed 's/^,//;s/,$//')
+        SVPN_ALLOWED="${SVPN_NET4}, ${VPN_MAP_DST4}${IPS:+, ${IPS}}"
+    fi
 
 	# RzaNs_sVPN_main
 
@@ -192,7 +213,7 @@ AllowedIPs = ${CLIENT_IP}/32
     SERVER_PORT=$SPLIT_PORT
     export SVPN_DNS_IP SVPN_ALLOWED
     SPLIT_FILE="/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
-    render "/etc/wireguard/templates/rzans_svpn_main.conf" >"$SPLIT_FILE"
+    _render "/etc/wireguard/templates/rzans_svpn_main.conf" >"$SPLIT_FILE"
     chmod 600 "$SPLIT_FILE"
 
     # AGH persistent entry для Split-VPN
@@ -239,7 +260,7 @@ AllowedIPs = ${CLIENT_IP}/32
     # экспортируем DNS IP для full-профиля (если используется в шаблоне)
     export FVPN_DNS_IP
     FULL_FILE="/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
-    render "/etc/wireguard/templates/rzans_fvpn_main.conf" >"$FULL_FILE"
+    _render "/etc/wireguard/templates/rzans_fvpn_main.conf" >"$FULL_FILE"
     chmod 600 "$FULL_FILE"
 
     # AGH persistent entry для Full-VPN
@@ -360,10 +381,10 @@ backup(){
 is_port() { [[ $1 =~ ^[0-9]+$ ]] && (( 1 <= $1 && $1 <= 65535 )); }
 
 # ── читаем и валидируем порты из settings.map ───────────────────────────────
-# --- порты из settings.map ---------------------------------------------------
+# --- порты из settings.map (автоподстановка, без фатального выхода) ----------
 SPLIT_PORT=$(settings_get_tag SVPN_PORT 500);  is_port "$SPLIT_PORT" || SPLIT_PORT=500
 FULL_PORT=$(settings_get_tag FVPN_PORT 4500);  is_port "$FULL_PORT"  || FULL_PORT=4500
-export SPLIT_PORT FULL_PORT            # render() будет подставлять ${SPLIT_PORT} в шаблоны
+export SPLIT_PORT FULL_PORT
 
 # --- подсети из settings.map -------------------------------------------------
 SVPN_NET4=$(settings_get_tag SVPN_NET4 "10.29.8.0/24")
