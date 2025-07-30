@@ -698,9 +698,16 @@ done
 shopt -u nullglob
 
 # Загружаем и создаем списки исключений IP‑адресов
-export NO_REBOOT=1            # <‑‑ подавляем авто‑ребут внутри update.sh
+# ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
+# Обновление баз (doall → update) в режиме **install**
+#   • INSTALL_STAGE=1 —> update.sh пропускает apt‑upgrade,
+#     AGH/F2B апгрейды и dump ipset‑банов.
+#   • NO_REBOOT=1     —> даже если ядро обновилось, ребута не будет.
+export INSTALL_STAGE=1
+export NO_REBOOT=1
 /opt/rzans_vpn_main/doall.sh ip
-unset NO_REBOOT               # на всякий случай
+unset INSTALL_STAGE NO_REBOOT
+# ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
 
 # гарантируем, что каталоги уже существуют
 mkdir -p /etc/wireguard \

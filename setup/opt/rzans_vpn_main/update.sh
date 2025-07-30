@@ -3,6 +3,16 @@ set -eEuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 export LC_ALL=C
 
+# если скрипт запущен внутри setup.sh → устанавливаем режим «install»
+#   INSTALL_STAGE=1 update.sh                   # ← ничего «тяжёлого» не выполняем
+INSTALL_STAGE="${INSTALL_STAGE:-0}"
+if [[ "$INSTALL_STAGE" == "1" ]]; then
+  SKIP_AGH=1
+  SKIP_APT=1
+  SKIP_FAIL2BAN=1
+  SKIP_IPSET=1
+fi
+
 # Обработка ошибок
 handle_error() {
     os="$(lsb_release -ds 2>/dev/null \
@@ -81,7 +91,7 @@ agh_upgrade() {
   if ! curl --retry 3 -fsSL "${BASE}/${FILE}" -o "$TAR"; then
     echo "[AGH] ✗ Download failed"; return 1
   fi
-  if ! echo "${SHA}  $TAR" | sha256sum -c - --status; then
+  if ! echo "${SHA}  ${TAR}" | sha256sum -c - --status; then
     echo "[AGH] ✗ Checksum mismatch"; return 1
   fi
 
@@ -112,10 +122,10 @@ fi
   echo -e "\e[1;36m[AGH] Upgrade done: ${OLDV:-unknown} → ${NEWV:-unknown}\e[0m"
 }
 
-# Режим «только обновить AGH»: ./update.sh agh
-if [[ "${1:-}" == "agh" ]]; then
-  agh_upgrade
-  exit 0
+# ── AGH‑upgrade: пропускаем, если INSTALL_STAGE=1 или вызван skip‑флаг ──
+if [[ "${1:-}" == "agh" ]]; then     # однократный режим «только AGH»
+  [[ -n "${SKIP_AGH:-}" ]] && { echo "[AGH] skipped (install stage)"; exit 0; }
+  agh_upgrade; exit 0
 fi
 
 rm -f /opt/rzans_vpn_main/download/*
@@ -282,18 +292,28 @@ if [[ -z "${1:-}" || "${1:-}" == "ip" || "${1:-}" == "ips" ]]; then
 fi
 
 # ── Проверка/обновление AdGuard Home (если включён)
-agh_upgrade
+if [[ -n "${SKIP_AGH:-}" ]]; then
+  echo "[AGH] skipped (install stage)"
+else
+  agh_upgrade
+fi
 
 # ── system packages upgrade (runs nightly via timer) ──────────────────
-echo -e '\e[1;36m[SYS] Running apt update && dist-upgrade…\e[0m'
-if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --autoremove; then
-    echo -e '\e[1;36m[SYS] System packages are up to date.\e[0m'
+if [[ -n "${SKIP_APT:-}" ]]; then
+  echo -e '\e[1;36m[SYS] APT upgrade skipped (install stage).\e[0m'
 else
-    echo -e '\e[1;31m[SYS] apt dist-upgrade failed — continuing.\e[0m'
+  echo -e '\e[1;36m[SYS] Running apt update && dist-upgrade…\e[0m'
+  if apt-get update && \
+     DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y --autoremove; then
+      echo -e '\e[1;36m[SYS] System packages are up to date.\e[0m'
+  else
+      echo -e '\e[1;31m[SYS] apt dist-upgrade failed — continuing.\e[0m'
+  fi                     # ← закрывает inner if apt‑get
 fi
 
 # ── Fail2Ban: проверка версии и комментарий в settings.map ──────────────
-if dpkg -s fail2ban &>/dev/null; then
+if [[ -z "${SKIP_FAIL2BAN:-}" ]]; then
+  if dpkg -s fail2ban &>/dev/null; then
   NEW_F2B_VER=$(dpkg -s fail2ban | awk '/^Version:/{print $2}')
   OLD_F2B_VER=$(grep -Po '(?<=^SSH_PROTECTION[^\n#]*# v)[^ ]+' "$SETTINGS" 2>/dev/null || true)
   # пишем только если найдено РАЗНОЕ значение
@@ -301,16 +321,19 @@ if dpkg -s fail2ban &>/dev/null; then
     :   # всё актуально
   else
     settings_set_ssh_comment "$NEW_F2B_VER" "$(date +%d.%m.%Y)"
-  fi
-fi
+  fi                      # ← закрывает if проверки OLD/NEW
+  fi                      # ← закрывает if dpkg ‑s fail2ban
+fi  
 
 # ── persist ipset bans ──────────────────────────────────────────
-if command -v ipset >/dev/null; then
+if [[ -z "${SKIP_IPSET:-}" ]]; then
+  if command -v ipset >/dev/null; then
     mkdir -p /var/lib/ipset
     { ipset save ipset-block   2>/dev/null || true; \
       ipset save ipset-block6  2>/dev/null || true; } \
       > /var/lib/ipset/ipset-bans.rules
     echo -e '\e[1;36m[SYS] ipset bans saved.\e[0m'
+  fi
 fi
 
 # ── автоматический reboot, если ядро/glibc потребуют перезагрузки ───────────
