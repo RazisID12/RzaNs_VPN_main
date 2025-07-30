@@ -1,6 +1,6 @@
 # Up-script
 #!/bin/bash
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 027
 
 #Подключаем общий модуль settings и приводим файл к эталону
@@ -232,7 +232,15 @@ export EXT6_IP
 # ── 3. Очистка старых правил ───────────────────────────────────────────────────
 /opt/rzans_vpn_main/down.sh "$INTERFACE"
 
-# сразу закрываем всё
+# ── 0. Спасаем активный SSH и loopback ────────────────────────────
+ipt  -A INPUT  -i lo -j ACCEPT
+ipt  -A OUTPUT -o lo -j ACCEPT
+ipt  -A INPUT  -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+ipt6 -A INPUT  -i lo -j ACCEPT
+ipt6 -A OUTPUT -o lo -j ACCEPT
+ipt6 -A INPUT  -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+
+# ── 1. Теперь можно жёстко опустить политики ──────────────────────
 ipt  -P INPUT   DROP
 ipt  -P FORWARD DROP
 ipt6 -P INPUT   DROP
@@ -513,7 +521,8 @@ ins6 filter OUTPUT -o lo -j ACCEPT
 ins6 filter INPUT  -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
 # ── mangle: Clamp MSS до PMTU (устраняет «не открываются сайты» при низком MTU)
-ipt -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+ins mangle FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+ins6 mangle FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
 # обязательные и служебные ICMPv6-типы
 for T in 1 2 3 4 133 134 135 136 143 144 145; do

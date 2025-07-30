@@ -1,6 +1,6 @@
 #!/bin/bash
 # DOWN-script – снимает ровно то, что ставит up.sh
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 umask 027
 
 set -eEuo pipefail
@@ -181,8 +181,11 @@ ipt -t filter -F
 ipt -t filter -X 2>/dev/null || true
 # ── NAT: возвращаем «как раньше» — полный flush ────────────────────
 #    (пользовательские DNS-цепочки и Mapping удаляем после flush’а)
+# flush
 ipt -t nat -F
-# удалить стабильные DNS-цепочки, которые создаёт up.sh
+# удалить ВСЕ пользовательские цепочки (если остались)
+ipt -t nat -X 2>/dev/null || true
+# плюс явная зачистка наших стабильных DNS‑цепочек (на случай старых версий)
 ipt -t nat -X RZANS_DNS_S 2>/dev/null || true
 ipt -t nat -X RZANS_DNS_F 2>/dev/null || true
 ipt -t nat -X RZANS_DNS   2>/dev/null || true
@@ -205,7 +208,9 @@ if [[ "$HAS_IP6" == y ]]; then
   ipt6 -t filter -F
   ipt6 -t filter -X 2>/dev/null || true
   ipt6 -t nat -F 2>/dev/null || true
-  # симметрично пытаемся удалить DNS-цепочки и Mapping (если вдруг существовали)
+  # удалить все пользовательские цепочки
+  ipt6 -t nat -X 2>/dev/null || true
+  # дальше точечно чистим наши, вдруг остались
   ipt6 -t nat -X RZANS_DNS_S 2>/dev/null || true
   ipt6 -t nat -X RZANS_DNS_F 2>/dev/null || true
   ipt6 -t nat -X RZANS_DNS   2>/dev/null || true
