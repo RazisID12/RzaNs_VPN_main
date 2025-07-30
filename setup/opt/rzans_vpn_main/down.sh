@@ -5,6 +5,8 @@ umask 027
 
 set -eEuo pipefail
 trap 'echo "ERR on line $LINENO – cmd: $BASH_COMMAND" >&2; exit 1' ERR
+# подключаем вспомогательные функции settings_get_tag и др.
+. /opt/rzans_vpn_main/settings.sh
 shopt -s expand_aliases
 
 # единые алиасы
@@ -147,21 +149,52 @@ read_settings() {
 
 read_settings
 
-# ── 2. базовые переменные ───────────────────────────────────────────
-[[ -z "${1:-}" ]] && IFACE=$(ip route | awk '/^default/{print $5;exit}') || IFACE=$1
-# IPv4
-if [[ -n "$EXT4_IP_CFG" && "$EXT4_IP_CFG" != "0.0.0.0" ]]; then
-  EXT4_IP=$EXT4_IP_CFG
+# ── 2. базовые переменные (симметрия с up.sh) ───────────────────────
+# 0) если интерфейс передан аргументом — используем его
+if [[ -n "${1:-}" ]]; then
+  INTERFACE=$1
 else
-  EXT4_IP=$(ip -o -4 addr show dev "$IFACE" scope global \
-           | awk '{print $4; exit}' | cut -d/ -f1)
+  # 1) приоритет — EXT_IF из settings.map
+  INTERFACE=$(settings_get_tag EXT_IF "")
+
+  # 2) иначе ждём default‑маршрут IPv4 (до 30 с, как в up.sh)
+  if [[ -z $INTERFACE ]]; then
+    for _ in {1..30}; do
+      INTERFACE=$(ip -4 route | awk '/^default/{print $5;exit}')
+      [[ -n $INTERFACE ]] && break
+      sleep 1
+    done
+  fi
+
+  # 3) ещё пусто — берём первый интерфейс с глобальным IPv4
+  [[ -z $INTERFACE ]] && \
+    INTERFACE=$(ip -o -4 addr show scope global | awk '{print $2;exit}')
 fi
-# IPv6
+
+# финальная проверка
+[[ -z $INTERFACE ]] && { echo "Cannot determine external interface"; exit 1; }
+# ── внешний IPv4: ждём до 30 с, как в up.sh ─────────────────────────
+if [[ -n "$EXT4_IP_CFG" && "$EXT4_IP_CFG" != "0.0.0.0" ]]; then
+  EXT4_IP=$EXT4_IP_CFG                      # явно указан в settings.map
+else
+  for _ in {1..30}; do
+    EXT4_IP=$(ip -o -4 addr show dev "$INTERFACE" scope global \
+              | awk '{print $4; exit}' | cut -d/ -f1)
+    [[ -n $EXT4_IP ]] && break
+    sleep 1
+  done
+  [[ -z $EXT4_IP ]] && { echo "No global IPv4 on $INTERFACE after 30 s – continue cleanup"; }
+fi
+# ── внешний IPv6: то же ожидание до 30 с ────────────────────────────
 if [[ -n "$EXT6_IP_CFG" && "$EXT6_IP_CFG" != "::" ]]; then
   EXT6_IP=$EXT6_IP_CFG
 else
-  EXT6_IP=$(ip -o -6 addr show dev "$IFACE" scope global \
-            | awk '{print $4; exit}' | cut -d/ -f1)
+  for _ in {1..30}; do
+    EXT6_IP=$(ip -o -6 addr show dev "$INTERFACE" scope global \
+              | awk '{print $4; exit}' | cut -d/ -f1)
+    [[ -n $EXT6_IP ]] && break
+    sleep 1
+  done
 fi
 
 # ── ipset ──────────────────────────
@@ -233,9 +266,9 @@ for MAP in "${SNAT_MAP[@]}"; do
   IFS='=' read -r _ ext <<< "$MAP"
     is_ip_v4 "$ext" || { echo "⚠ bad IP $ext — пропущен"; continue; }
     [[ -n ${EXT_DONE[$ext]+x} ]] && continue
-  if ip -4 addr show dev "$IFACE" to "$ext"/32 &>/dev/null; then
+  if ip -4 addr show dev "$INTERFACE" to "$ext"/32 &>/dev/null; then
       # shellcheck disable=SC2086
-      ip addr del "$ext/32" dev "$IFACE" 2>/dev/null || true
+      ip addr del "$ext/32" dev "$INTERFACE" 2>/dev/null || true
   fi
   EXT_DONE[$ext]=1
 done

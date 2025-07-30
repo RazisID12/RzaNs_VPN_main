@@ -596,26 +596,52 @@ DNS_LINE="DNS=${DNS4_1} ${DNS4_2}"
 # вставляем строку сразу после [Resolve]
 sed -i "/^\[Resolve\]/a ${DNS_LINE}" "$RESCONF"
 
-# 3. /etc/network/interfaces – правим v4 всегда; v6 — только при наличии IPv6
+# 3. /etc/network/interfaces — меняем *только* строки «dns‑nameservers»
+
+# если файла ещё нет — создаём минимальный каркас
+if [[ ! -f /etc/network/interfaces ]]; then
+  cat >/etc/network/interfaces <<'EOF'
+auto lo
+iface lo inet loopback
+# интерфейсы настроит settings.sh
+EOF
+fi
+
 if [[ -f /etc/network/interfaces ]]; then
+  ## IPv4 (static|dhcp) -------------------------------------------------
+  sed -i -E "/^[[:space:]]*iface[[:space:]].* inet (static|dhcp)/{
+      :ipv4
+      n
+      /^[[:space:]]*iface[[:space:]].* inet/ b
+      /^[[:space:]]*#/ b ipv4
+      /^[[:space:]]*dns-nameservers[[:space:]]+/{
+          s#^[[:space:]]*dns-nameservers.*#    dns-nameservers ${DNS4_1} ${DNS4_2}#
+          b ipv4
+      }
+      /^$/{
+          i\\    dns-nameservers ${DNS4_1} ${DNS4_2}
+          b ipv4
+      }
+      b ipv4
+  }" /etc/network/interfaces
+
+  ## IPv6 (static|dhcp) -------------------------------------------------
   if [[ "$IPV6_AVAILABLE" == "y" ]]; then
-    awk -v v4="dns-nameservers ${DNS4_1} ${DNS4_2}" \
-        -v v6="dns-nameservers ${DNS6_1} ${DNS6_2}" '
-      function flush(){if(sec=="v4"&&!dns)print "    "v4; if(sec=="v6"&&!dns)print "    "v6; sec=""; dns=0}
-      /^[[:space:]]*iface .* inet6 static/{flush();sec="v6";dns=0;print;next}
-      /^[[:space:]]*iface .* inet static/{flush();sec="v4";dns=0;print;next}
-      sec!="" && /^[[:space:]]*dns-nameservers/{dns=1; if(sec=="v4")print "    "v4; else print "    "v6; next}
-      {print}
-      END{flush()}
-    ' /etc/network/interfaces >"$TMP_DIR/intf.new" && mv "$TMP_DIR/intf.new" /etc/network/interfaces
-  else
-    awk -v v4="dns-nameservers ${DNS4_1} ${DNS4_2}" '
-      function flush(){if(sec=="v4"&&!dns)print "    "v4; sec=""; dns=0}
-      /^[[:space:]]*iface .* inet static/{flush();sec="v4";dns=0;print;next}
-      sec!="" && /^[[:space:]]*dns-nameservers/{dns=1; print "    "v4; next}
-      {print}
-      END{flush()}
-    ' /etc/network/interfaces >"$TMP_DIR/intf.new" && mv "$TMP_DIR/intf.new" /etc/network/interfaces
+    sed -i -E "/^[[:space:]]*iface[[:space:]].* inet6 (static|dhcp)/{
+        :ipv6
+        n
+        /^[[:space:]]*iface[[:space:]].* inet/ b
+        /^[[:space:]]*#/ b ipv6
+        /^[[:space:]]*dns-nameservers[[:space:]]+/{
+            s#^[[:space:]]*dns-nameservers.*#    dns-nameservers ${DNS6_1} ${DNS6_2}#
+            b ipv6
+        }
+        /^$/{
+            i\\    dns-nameservers ${DNS6_1} ${DNS6_2}
+            b ipv6
+        }
+        b ipv6
+    }" /etc/network/interfaces
   fi
 fi
 echo "✓ kresd и resolved.conf обновлены на ${DNS4_1}/${DNS4_2}"

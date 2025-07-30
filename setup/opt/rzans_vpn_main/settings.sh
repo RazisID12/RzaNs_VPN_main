@@ -171,44 +171,42 @@ _update_system_dns() {
   sed -i "/^\[Resolve\]/a ${DNS_LINE}" "$RESCONF"
   systemctl restart systemd-resolved 2>/dev/null || true
 
-  # ── /etc/network/interfaces (если существует) ───────────────────────
+  # ── /etc/network/interfaces: меняем ТОЛЬКО dns‑nameservers ──────────
   if [[ -f /etc/network/interfaces ]]; then
+    ## IPv4 (static|dhcp) -------------------------------------------------
+    sed -i -E "/^[[:space:]]*iface[[:space:]].* inet (static|dhcp)/{
+        :ipv4
+        n
+        /^[[:space:]]*iface[[:space:]].* inet/ b
+        /^[[:space:]]*#/ b ipv4
+        /^[[:space:]]*dns-nameservers[[:space:]]+/{
+            s#^[[:space:]]*dns-nameservers.*#    dns-nameservers ${DNS4_1} ${DNS4_2}#
+            b ipv4
+        }
+        /^$/{
+            i\\    dns-nameservers ${DNS4_1} ${DNS4_2}
+            b ipv4
+        }
+        b ipv4
+    }" /etc/network/interfaces
+
+    ## IPv6 (static|dhcp) -------------------------------------------------
     if [[ $IPV6_AVAIL == y ]]; then
-      local TMP_IF; TMP_IF=$(mktemp /etc/network/interfaces.XXXXXX)
-      awk -v v4="dns-nameservers ${DNS4_1} ${DNS4_2}" \
-          -v v6="dns-nameservers ${DNS6_1} ${DNS6_2}" '
-        function flush(){if(sec=="v4"&&!dns)print "    "v4; if(sec=="v6"&&!dns)print "    "v6; sec=""; dns=0}
-        /^[[:space:]]*iface .* inet6 static/{flush();sec="v6";dns=0;print;next}
-        /^[[:space:]]*iface .* inet static/{flush();sec="v4";dns=0;print;next}
-        # первая строка dns‑nameservers → заменяем; остальные в том же iface пропускаем
-        sec && /^[[:space:]]*dns-nameservers/{
-          if(!dns){
-            dns=1
-            if(sec=="v4") print "    " v4; else print "    " v6
+      sed -i -E "/^[[:space:]]*iface[[:space:]].* inet6 (static|dhcp)/{
+          :ipv6
+          n
+          /^[[:space:]]*iface[[:space:]].* inet/ b
+          /^[[:space:]]*#/ b ipv6
+          /^[[:space:]]*dns-nameservers[[:space:]]+/{
+              s#^[[:space:]]*dns-nameservers.*#    dns-nameservers ${DNS6_1} ${DNS6_2}#
+              b ipv6
           }
-          next     # пропускаем исходную строку в любом случае
-        }
-        {print}
-        END{flush()}' /etc/network/interfaces >"$TMP_IF" \
-      && mv -f "$TMP_IF" /etc/network/interfaces \
-      || { rm -f "$TMP_IF"; return 1; }
-    else
-      local TMP_IF; TMP_IF=$(mktemp /etc/network/interfaces.XXXXXX)
-      awk -v v4="dns-nameservers ${DNS4_1} ${DNS4_2}" '
-        function flush(){if(sec=="v4"&&!dns)print "    "v4; sec=""; dns=0}
-        /^[[:space:]]*iface .* inet static/{flush();sec="v4";dns=0;print;next}
-        # первая строка dns‑nameservers → заменяем; остальные в том же iface пропускаем
-        sec && /^[[:space:]]*dns-nameservers/{
-          if(!dns){
-            dns=1
-            print "    " v4
+          /^$/{
+              i\\    dns-nameservers ${DNS6_1} ${DNS6_2}
+              b ipv6
           }
-          next
-        }
-        {print}
-        END{flush()}' /etc/network/interfaces >"$TMP_IF" \
-      && mv -f "$TMP_IF" /etc/network/interfaces \
-      || { rm -f "$TMP_IF"; return 1; }
+          b ipv6
+      }" /etc/network/interfaces
     fi
   fi
 }
