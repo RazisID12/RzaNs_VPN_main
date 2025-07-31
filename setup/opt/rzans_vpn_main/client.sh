@@ -40,7 +40,7 @@ if ! declare -F _render >/dev/null 2>&1; then
 fi
 
 # проверяем критичные внешние бинари (uuidgen/wg — для WireGuard; yq опционален)
- # yq проверяем/используем только внутри add_agh_client/remove_agh_client
+# yq проверяем/используем только внутри add_agh_client/remove_agh_client
 for bin in uuidgen wg; do
   _have "$bin" || { echo "ERROR: '$bin' not found, abort." >&2; exit 127; }
 done
@@ -76,26 +76,26 @@ add_agh_client() {
     local port uuid; [[ $mode == split ]] && port=5353 || port=5354
     uuid=$(uuidgen)
 
-    # Единый стиль: значения через окружение, чтение в выражении через strenv(...)
+    # Единый стиль: значения через окружение, чтение в выражении через env(...)
     if ! IP="$ip" NICK="$nick" PORT="$port" UUID="$uuid" \
       yq eval '
         .clients.persistent //= [] |
         (
           .clients.persistent[]?
           | select(
-              (.ids       // []) | index(strenv(IP)) and
-              (.upstreams // []) | index("127.0.0.1:" + strenv(PORT))
+              (.ids       // []) | index(env(IP)) and
+              (.upstreams // []) | index("127.0.0.1:" + env(PORT))
             )
         ) as $c |
         if $c then
-          ($c.name      = strenv(NICK)) |
-          ($c.upstreams = ["127.0.0.1:" + strenv(PORT)])
+          ($c.name      = env(NICK)) |
+          ($c.upstreams = ["127.0.0.1:" + env(PORT)])
         else
           .clients.persistent += [{
-            name:                strenv(NICK),
-            ids:                 [strenv(IP)],
-            upstreams:           ["127.0.0.1:" + strenv(PORT)],
-            uid:                 strenv(UUID),
+            name:                env(NICK),
+            ids:                 [env(IP)],
+            upstreams:           ["127.0.0.1:" + env(PORT)],
+            uid:                 env(UUID),
             use_global_settings: true
           }]
         end
@@ -121,7 +121,7 @@ remove_agh_client() {
     if ! NICK="$nick" yq eval '
       .clients.persistent = (
         (.clients.persistent // [])        # если блока нет → создаём []
-        | map(select(.name != strenv(NICK)))  # фильтруем по имени
+        | map(select(.name != env(NICK)))  # фильтруем по имени
       )' -i "$agh"; then
         echo "[WARN] yq failed, skip AdGuardHome client removal" >&2
         return 0
