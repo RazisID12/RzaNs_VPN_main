@@ -76,33 +76,28 @@ add_agh_client() {
     local port uuid; [[ $mode == split ]] && port=5353 || port=5354
     uuid=$(uuidgen)
 
-    # Единый стиль: значения через окружение, чтение в выражении через env(...)
-    if ! IP="$ip" NICK="$nick" PORT="$port" UUID="$uuid" \
-      yq eval '
-        .clients.persistent //= [] |
-        (
-          .clients.persistent[]?
-          | select(
-              (.ids       // []) | index(env(IP)) and
-              (.upstreams // []) | index("127.0.0.1:" + env(PORT))
-            )
-        ) as $c |
-        if $c then
-          ($c.name      = env(NICK)) |
-          ($c.upstreams = ["127.0.0.1:" + env(PORT)])
-        else
-          .clients.persistent += [{
-            name:                env(NICK),
-            ids:                 [env(IP)],
-            upstreams:           ["127.0.0.1:" + env(PORT)],
-            uid:                 env(UUID),
-            use_global_settings: true
-          }]
-        end
-      ' -i "$agh"; then
-        echo "[WARN] yq failed, skip AdGuardHome client registration (profiles are created)" >&2
-        return 0
-    fi
+    # 1) гарантируем, что .clients.persistent — массив
+    IP="$ip" yq -i '.clients.persistent = (.clients.persistent // [])' "$agh" \
+        || { echo "[WARN] yq init failed — continuing"; return 0; }
+
+    # 2) удаляем прежнюю запись с тем же IP и портом (если была)
+    IP="$ip" PORT="$port" \
+    yq -i '
+      del(
+        .clients.persistent[]
+        | select(
+            ((.ids       // []) | contains([env(IP)])) and
+            ((.upstreams // []) | contains(["127.0.0.1:" + env(PORT)]))
+          )
+      )' "$agh" \
+        || { echo "[WARN] yq delete failed — continuing"; return 0; }
+
+    # 3) добавляем свежую запись
+    IP="$ip" NICK="$nick" PORT="$port" UUID="$uuid" \
+    yq -i '
+      .clients.persistent += [{"name": env(NICK), "ids": [env(IP)], "upstreams": ["127.0.0.1:" + env(PORT)], "uid": env(UUID), "use_global_settings": true}]
+    ' "$agh" \
+        || { echo "[WARN] yq add failed — continuing"; return 0; }
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }

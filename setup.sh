@@ -3,7 +3,7 @@
 # Скрипт для установки на своём сервере RzaNs_VPN_main
 # ==============================================================================
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-umask 027 
+umask 027
 export LC_ALL=C
 set -euo pipefail
 
@@ -204,8 +204,8 @@ for service in kresd@ wg-quick@; do
 done
 
 # останавливаем/отключаем только актуальные юниты
-systemctl stop    core              dwnld_update dwnld_update.timer           &>/dev/null || true
-systemctl disable core              dwnld_update dwnld_update.timer           &>/dev/null || true
+systemctl stop    core.service      dwnld_update dwnld_update.timer           &>/dev/null || true
+systemctl disable core.service      dwnld_update dwnld_update.timer           &>/dev/null || true
 
 # Остановим и выключим ненужные службы
 systemctl stop firewalld    &>/dev/null || true
@@ -284,9 +284,10 @@ AGH_DROPIN="/etc/systemd/system/AdGuardHome.service.d/10-rzans-deps.conf"
 install -d "$(dirname "$AGH_DROPIN")"
 cat >"$AGH_DROPIN" <<'EOF'
 [Unit]
-After=network-online.target wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service \
-      kresd@1.service kresd@2.service
+After=network-online.target wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+After=kresd@1.service kresd@2.service
 Wants=network-online.target wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=kresd@1.service kresd@2.service
 EOF
 
 # ==== единственное клонирование репозитория =====
@@ -333,24 +334,13 @@ ERRORS=""
   fi
   # на всякий случай остановим сервис до замены файлов (если он есть)
   systemctl stop AdGuardHome 2>/dev/null || true
-  # Полностью очищаем рабочий каталог и распаковываем архив
+  # Полностью очищаем рабочий каталог и распаковываем архив, убирая верхний каталог AdGuardHome/
   rm -rf /opt/AdGuardHome/* 2>/dev/null || true
   tar -xzf "$agh_tar" --strip-components=1 -C /opt/AdGuardHome
 
-  # После strip-components ожидаем файл /opt/AdGuardHome/AdGuardHome.
-  # Если архив внезапно содержит вложенную директорию, обработаем и её.
-  if [[ -x /opt/AdGuardHome/AdGuardHome ]]; then
-      if [[ -d /opt/AdGuardHome/AdGuardHome ]]; then
-          # структура: /opt/AdGuardHome/AdGuardHome/AdGuardHome (файл)
-          AGH_BIN="/opt/AdGuardHome/AdGuardHome/AdGuardHome"
-      else
-          # структура: /opt/AdGuardHome/AdGuardHome (файл)
-          AGH_BIN="/opt/AdGuardHome/AdGuardHome"
-      fi
-  else
-      # fallback: ищем бинарник вручную
-      AGH_BIN="$(find /opt/AdGuardHome -maxdepth 3 -type f -name AdGuardHome -perm -111 | head -n1)"
-  fi
+  # Бинарник должен лежать по пути /opt/AdGuardHome/AdGuardHome
+  AGH_BIN="/opt/AdGuardHome/AdGuardHome"
+  [[ -x "$AGH_BIN" ]] || AGH_BIN="$(find /opt/AdGuardHome -maxdepth 2 -type f -name AdGuardHome -perm -111 | head -n1)"
   if [[ -z "${AGH_BIN:-}" || ! -x "$AGH_BIN" ]]; then
       echo "✗ AdGuard Home binary not found after extract"; exit 12
   fi
@@ -593,8 +583,8 @@ sed -i -E '/^[[:space:]]*DNS=/d' "$RESCONF"
 # формируем итоговую строку: IPv4 всегда, IPv6 добавляем только при доступном стеке
 DNS_LINE="DNS=${DNS4_1} ${DNS4_2}"
 [[ "$IPV6_AVAILABLE" == "y" ]] && DNS_LINE+=" ${DNS6_1} ${DNS6_2}"
-# вставляем строку сразу после [Resolve]
-sed -i "/^\[Resolve\]/a ${DNS_LINE}" "$RESCONF"
+# вставляем строку только после ПЕРВОЙ секции [Resolve]
+sed -i "0,/^\[Resolve\]/{/^\[Resolve\]/a ${DNS_LINE}}" "$RESCONF"
 
 # 3. /etc/network/interfaces — меняем *только* строки «dns‑nameservers»
 
@@ -652,8 +642,8 @@ echo "✓ kresd и resolved.conf обновлены на ${DNS4_1}/${DNS4_2}"
 
 # AdGuard Home
 if [[ -x /opt/AdGuardHome/AdGuardHome ]]; then
-  AGH_VER=$(/opt/AdGuardHome/AdGuardHome -v 2>&1 \
-            | sed -n 's/.*version[[:space:]]\+//p' || true)
+  AGH_VER=$(/opt/AdGuardHome/AdGuardHome --version 2>&1 \
+            | sed -nE 's/.*\b(v?[0-9]+\.[0-9]+\.[0-9]+).*/\1/p' || true)
   if [[ -n $AGH_VER ]]; then
     settings_set_agh_comment "$AGH_VER" "$(date +%d.%m.%Y)"
   else
@@ -687,7 +677,9 @@ chmod 644 /etc/knot-resolver/*.rpz 2>/dev/null || true
 
 # ── единый блок прав на ВСЁ содержимое
 find /opt/rzans_vpn_main -type d -exec chmod 755 {} +
-find /opt/rzans_vpn_main -type f -exec chmod 644 {} +
+find /opt/rzans_vpn_main -type f ! -name '*.sh' ! -name '*.py' -exec chmod 644 {} +
+# 644 только для НЕ-скриптов, чтобы не сбивать исполняемые биты у .sh/.py
+# 755/644 выше уже расставлены; здесь возвращаем +x только скриптам
 find /opt/rzans_vpn_main -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod +x {} +
 # settings.map должен быть приватным
 chmod 600 /opt/rzans_vpn_main/settings.map 2>/dev/null || true
@@ -773,30 +765,28 @@ else
   systemctl disable --now AdGuardHome 2>/dev/null || true
 fi
 
-# Настроим swap (512 МБ):
-#  • если swap не активирован, но файл уже есть → попробуем активировать;
-#  • если файла нет → создадим и активируем.
+# ── Настраиваем swap (512 МБ) только если сейчас нет активного swap ───────────
 if [[ -z "$(swapon --show)" ]]; then
   SWAPFILE="/swapfile"
   SWAPSIZE=512
-  if [[ -f $SWAPFILE ]]; then            # файл уже существует —- пробуем просто включить
-    chmod 600 "$SWAPFILE"
-    mkswap "$SWAPFILE"      2>/dev/null
-  else                                   # файла нет —- создаём
+
+  # если файла нет — создаём; если есть — используем существующий
+  if [[ ! -f $SWAPFILE ]]; then
     if command -v fallocate &>/dev/null; then
-      fallocate -l "${SWAPSIZE}M" "$SWAPFILE" 2>/dev/null
+      fallocate -l "${SWAPSIZE}M" "$SWAPFILE" 2>/dev/null \
+        || ERRORS+=$'\nSwap creation failed (fallocate)'
     else
-      dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAPSIZE" status=none
-    fi
-    if [[ $? -ne 0 ]]; then
-      ERRORS+="\nSwap creation failed (disk space insufficient?)"
+      dd if=/dev/zero of="$SWAPFILE" bs=1M count="$SWAPSIZE" status=none \
+        || ERRORS+=$'\nSwap creation failed (dd)'
     fi
   fi
-  if [[ -s $SWAPFILE ]]; then            # файл существует и ненулевой
+
+  if [[ -s $SWAPFILE ]]; then
     chmod 600 "$SWAPFILE"
-    mkswap "$SWAPFILE"
-    swapon "$SWAPFILE"
-    grep -q "^$SWAPFILE " /etc/fstab || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
+    # пробуем просто включить; при отсутствии сигнатуры создаём её
+    swapon "$SWAPFILE" 2>/dev/null || { mkswap "$SWAPFILE" && swapon "$SWAPFILE"; }
+    grep -q "^$SWAPFILE " /etc/fstab \
+      || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
   fi
 fi
 
