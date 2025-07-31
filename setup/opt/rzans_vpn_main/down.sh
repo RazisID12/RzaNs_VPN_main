@@ -25,6 +25,18 @@ is_ip_v6() {
 }
 is_port()    { [[ $1 =~ ^[0-9]+$ ]] && (( 1 <= $1 && $1 <= 65535 )); }
 
+# wait_ip <iface> [timeout] [family 4|6] – печатает первый глобальный IP
+wait_ip() {
+  local ifc=$1 timeout=${2:-30} fam=${3:-4} ip_addr=""
+  for ((i=0; i<timeout; i++)); do
+    ip_addr=$(ip -o -"$fam" addr show dev "$ifc" scope global 2>/dev/null \
+                | awk 'NR==1{split($4,a,"/");print a[1]}')
+    [[ -n $ip_addr ]] && { printf '%s' "$ip_addr"; return 0; }
+    sleep 1
+  done
+  return 1
+}
+
 # ── ip6tables: auto-detect + поддержка отсутствия «-w» ─────────────
 if command -v ip6tables &>/dev/null; then
   if ip6tables -w -L >/dev/null 2>&1; then
@@ -108,7 +120,10 @@ read_settings() {
       VPN_MAP_SRC4)        VPN_MAP_SRC4="$a" ;;
       VPN_MAP_DST4)        VPN_MAP_DST4="$a" ;;
       SNAT)
-        if ! is_ip_v4 "$a" || ! is_ip_v4 "$b"; then
+        # 0.0.0.0 0.0.0.0 — «заглушка»: считаем, что SNAT не задан
+        if [[ "$a" == 0.0.0.0 && "$b" == 0.0.0.0 ]]; then
+          :
+        elif ! is_ip_v4 "$a" || ! is_ip_v4 "$b"; then
           echo "⚠ settings.map: SNAT <$a,$b> невалиден — пропущен" >&2
         else
           SNAT_MAP+=("$a=$b")
@@ -173,28 +188,18 @@ fi
 
 # финальная проверка
 [[ -z $INTERFACE ]] && { echo "Cannot determine external interface"; exit 1; }
-# ── внешний IPv4: ждём до 30 с, как в up.sh ─────────────────────────
+# ── внешний IPv4: ждём до 30 с, как в up.sh (через wait_ip)
 if [[ -n "$EXT4_IP_CFG" && "$EXT4_IP_CFG" != "0.0.0.0" ]]; then
-  EXT4_IP=$EXT4_IP_CFG                      # явно указан в settings.map
+  EXT4_IP=$EXT4_IP_CFG
 else
-  for _ in {1..30}; do
-    EXT4_IP=$(ip -o -4 addr show dev "$INTERFACE" scope global \
-              | awk '{print $4; exit}' | cut -d/ -f1)
-    [[ -n $EXT4_IP ]] && break
-    sleep 1
-  done
-  [[ -z $EXT4_IP ]] && { echo "No global IPv4 on $INTERFACE after 30 s – continue cleanup"; }
+  EXT4_IP=$(wait_ip "$INTERFACE" 30 4 || true)
+  [[ -z $EXT4_IP ]] && echo "⚠ No global IPv4 on $INTERFACE after 30 s – continue cleanup" >&2
 fi
-# ── внешний IPv6: то же ожидание до 30 с ────────────────────────────
+# ── внешний IPv6: то же ожидание до 30 с (через wait_ip)
 if [[ -n "$EXT6_IP_CFG" && "$EXT6_IP_CFG" != "::" ]]; then
   EXT6_IP=$EXT6_IP_CFG
 else
-  for _ in {1..30}; do
-    EXT6_IP=$(ip -o -6 addr show dev "$INTERFACE" scope global \
-              | awk '{print $4; exit}' | cut -d/ -f1)
-    [[ -n $EXT6_IP ]] && break
-    sleep 1
-  done
+  EXT6_IP=$(wait_ip "$INTERFACE" 30 6 || true)
 fi
 
 # ── ipset ──────────────────────────
@@ -302,4 +307,8 @@ if [[ -f "$SYSCTL_FILE" ]]; then
   }
   _has_key "net.ipv4.ip_forward" || sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1 || true
   _has_key "net.ipv4.conf.all.route_localnet" || sysctl -w net.ipv4.conf.all.route_localnet=0 >/dev/null 2>&1 || true
+  # откат остальных рантайм‑тюнов, если не зафиксированы в других конфиг‑файлах
+  _has_key "kernel.printk"                || sysctl -w kernel.printk="4 4 1 7"        >/dev/null 2>&1 || true
+  _has_key "net.core.default_qdisc"       || sysctl -w net.core.default_qdisc=pfifo_fast >/dev/null 2>&1 || true
+  _has_key "net.ipv4.tcp_congestion_control" || sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || true
 fi

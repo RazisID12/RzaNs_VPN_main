@@ -1,11 +1,35 @@
 # Up-script
 #!/bin/bash
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 027
 
 #Подключаем общий модуль settings и приводим файл к эталону
 . /opt/rzans_vpn_main/settings.sh
 settings_heal
+
+# ---------------------------------------------------------------------------
+# helpers --------------------------------------------------------------------
+is_ip_v4()   { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])$ ]]; }
+is_ip_v6()   { [[ $1 =~ ^((([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4})|(([0-9A-Fa-f]{1,4}:){1,7}:)|(::([0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})|(::)|(::ffff:(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])))$ ]]; }
+is_cidr_v4() { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])/(3[0-2]|[12]?[0-9])$ ]]; }
+
+# --- константные пути --------------------------------------------------------
+# используем одну переменную в обоих ветках (основной и fallback)
+mkdir -p /var/lib/ipset
+IPSET_STATE=/var/lib/ipset/ipset-bans.rules
+
+# wait_ip <iface> [timeout] [family 4|6] – печатает первый глобальный IP
+wait_ip() {
+  local ifc=$1 timeout=${2:-30} fam=${3:-4} ip_addr=""
+  for ((i=0; i<timeout; i++)); do
+    ip_addr=$(ip -o -"$fam" addr show dev "$ifc" scope global 2>/dev/null \
+                | awk 'NR==1{split($4,a,"/");print a[1]}')
+    [[ -n $ip_addr ]] && { printf '%s' "$ip_addr"; return 0; }
+    sleep 1
+  done
+  return 1
+}
 
 read_settings() {
   ADGUARD_HOME="n"
@@ -18,15 +42,9 @@ read_settings() {
   FVPN_NET4=""
   VPN_MAP_SRC4=""; VPN_MAP_DST4=""
   SNAT_MAP=()
+  ROLLBACK_TIMEOUT=180     # default 3 мин на откат
 
   SETTINGS=/opt/rzans_vpn_main/settings.map
-
-# --- helpers ---------------------------------------------------------------
-is_ip_v4()   { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])$ ]]; }
-is_ip_v6() {
-  [[ $1 =~ ^((([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4})|(([0-9A-Fa-f]{1,4}:){1,7}:)|(::([0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})|(::)|(::ffff:(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])))$ ]]
-}
-is_cidr_v4() { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])/(3[0-2]|[12]?[0-9])$ ]]; }
 
   [[ -r "$SETTINGS" ]] || { echo "ERROR: cannot read $SETTINGS"; exit 1; }
 
@@ -40,7 +58,8 @@ is_cidr_v4() { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2
     fi
     # Пустота допустима для: EXTIP4/6, TRUST4/6, SNAT
     if [[ -z "$a" ]]; then
-        [[ "$tag" =~ ^(EXTIP[46]|TRUST[46]|SNAT)$ ]] && continue
+        # ROLLBACK_TIMEOUT может быть без значения → берём default
+        [[ "$tag" =~ ^(EXTIP[46]|TRUST[46]|SNAT|ROLLBACK_TIMEOUT)$ ]] && continue
         echo "⚠ settings.map: тег «$tag» без значения — пропущен" >&2
         continue
     fi
@@ -81,8 +100,18 @@ is_cidr_v4() { [[ $1 =~ ^((25[0-5]|2[0-4][0-9]|[01]?[0-9]?[0-9])\.){3}(25[0-5]|2
       FVPN_NET4)           FVPN_NET4="$a" ;;
       VPN_MAP_SRC4)        VPN_MAP_SRC4="$a" ;;
       VPN_MAP_DST4)        VPN_MAP_DST4="$a" ;;
+      ROLLBACK_TIMEOUT)
+        if [[ $a =~ ^-?[0-9]+$ ]]; then      # допускаем «‑» впереди
+          (( a < 0 )) && a=0                 # отрицательные → «отключено»
+          ROLLBACK_TIMEOUT="$a"
+        else
+          echo "⚠ settings.map: ROLLBACK_TIMEOUT <$a> не число — использую 180" >&2
+        fi ;;
       SNAT)
-        if ! is_ip_v4 "$a" || ! is_ip_v4 "$b"; then
+        # 0.0.0.0 0.0.0.0 — «заглушка»: считаем, что SNAT не задан
+        if [[ "$a" == 0.0.0.0 && "$b" == 0.0.0.0 ]]; then
+          :                               # пропускаем такую запись
+        elif ! is_ip_v4 "$a" || ! is_ip_v4 "$b"; then
           echo "⚠ settings.map: SNAT <$a,$b> невалиден — пропущен" >&2
         else
           SNAT_MAP+=("$a=$b")
@@ -171,6 +200,14 @@ else
 fi
 ipt6() { [[ $HAS_IP6 == y ]] && _ipt6 "$@" || return 0; }
 
+# ── helper: гарантированно запустить atd перед использованием «at» ----------
+ensure_atd() {
+  command -v systemctl &>/dev/null || return 1
+  systemctl is-active --quiet atd || systemctl start atd 2>/dev/null || true
+  sleep 1
+  systemctl is-active --quiet atd
+}
+
 read_settings
 
 # ── Heal AdGuard Home config early (bind_hosts, upstreams, allowed_clients)
@@ -218,13 +255,7 @@ if [[ -n "$EXT4_IP_CFG" && "$EXT4_IP_CFG" != "0.0.0.0" ]]; then
   EXT4_IP=$EXT4_IP_CFG                       # явно указан валидный адрес
 else
   # ждём появления первого глобального IPv4 не дольше 30 с
-  for _ in {1..30}; do
-    EXT4_IP=$(ip -o -4 addr show dev "$INTERFACE" scope global \
-             | awk '{print $4; exit}' | cut -d/ -f1)
-    [[ -n "$EXT4_IP" ]] && break
-    sleep 1
-  done
-  if [[ -z "$EXT4_IP" ]]; then
+  if ! EXT4_IP=$(wait_ip "$INTERFACE" 30 4); then
     echo "No global IPv4 on $INTERFACE after 30 s – aborting" >&2
     exit 1
   fi
@@ -236,12 +267,7 @@ export EXT4_IP
 if [[ -n "$EXT6_IP_CFG" && "$EXT6_IP_CFG" != "::" ]]; then
   EXT6_IP=$EXT6_IP_CFG
 else
-  for _ in {1..30}; do
-    EXT6_IP=$(ip -o -6 addr show dev "$INTERFACE" scope global \
-              | awk '{print $4; exit}' | cut -d/ -f1)
-    [[ -n "$EXT6_IP" ]] && break
-    sleep 1
-  done
+  EXT6_IP=$(wait_ip "$INTERFACE" 30 6 || true)
 fi
 export EXT6_IP
 
@@ -263,8 +289,7 @@ ipt6 -P INPUT   DROP
 ipt6 -P FORWARD DROP
 
 ## ── проверяем наличие at/atd и ставим страховку, если можем ────────────────
-if command -v at &>/dev/null && command -v systemctl &>/dev/null \
-   && systemctl is-active --quiet atd; then
+if command -v at &>/dev/null && ensure_atd; then
   FALLBACK_OK=y
 else
   echo "⚠ 'at' или atd недоступны – аварийный откат не будет запланирован." >&2
@@ -272,11 +297,12 @@ else
 fi
 
 if [[ "$FALLBACK_OK" == y ]]; then
-# ── аварийный откат через at: однострочные iptables
-#  (IPv6-функция проверяется без builtin `command`)
-# shellcheck disable=SC2016
-  AT_JOB_ID=$(
-    LC_ALL=C at now + 3 minutes 2>&1 <<AT_EOF | awk '/job/{print $2}'
+# ── аварийный откат через at (таймер из ROLLBACK_TIMEOUT) ───────────────
+  if (( ROLLBACK_TIMEOUT > 0 )); then
+    # shellcheck disable=SC2016
+AT_JOB_ID=$(
+  LC_ALL=C at "now + ${ROLLBACK_TIMEOUT} seconds" 2>&1 <<AT_EOF | \
+    sed -n 's/^job \([0-9]\+\) .*/\1/p' | head -n1
 # очистка таблиц
 iptables -F
 iptables -t nat -F
@@ -297,6 +323,17 @@ iptables -A INPUT -p tcp --dport 22 -j ACCEPT
 iptables -A INPUT -p udp --dport ${SVPN_PORT} -j ACCEPT
 iptables -A INPUT -p udp --dport ${FVPN_PORT} -j ACCEPT
 
+# --- восстановление ipset‑банов ---------------------------------------
+if command -v ipset >/dev/null; then
+  if [[ -s "$IPSET_STATE" ]]; then
+    ipset flush ipset-block  2>/dev/null || true
+    ipset flush ipset-block6 2>/dev/null || true
+    ipset restore -exist < "$IPSET_STATE" || true
+    # ── сразу подключаем восстановленные баны ────────────────────────
+    iptables -A INPUT -m set --match-set ipset-block src -j DROP
+  fi
+fi
+
 # --- IPv6: всё закрыть жёстко --------------------------------------
 # IPv6: выполняем, если ip6tables вообще доступна
 if ip6tables -L >/dev/null 2>&1; then
@@ -305,10 +342,17 @@ if ip6tables -L >/dev/null 2>&1; then
   ip6tables -P INPUT   DROP
   ip6tables -P FORWARD DROP
   ip6tables -P OUTPUT  ACCEPT
+  # loopback / ESTABLISHED + восстановленные баны (симметрия с IPv4)
+  ip6tables -A INPUT -i lo -j ACCEPT
+  ip6tables -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  ip6tables -A INPUT -m set --match-set ipset-block6 src -j DROP
 fi
 
 AT_EOF
-)
+) || AT_JOB_ID=""
+  else
+    AT_JOB_ID=""
+  fi
 else
   AT_JOB_ID=""
 fi
@@ -362,11 +406,10 @@ if [[ "$HAS_IPSET" == y ]]; then
   ipset create ipset-allow6  hash:net     family inet6            comment -exist
 
   # 5-bis. Восстановление банов между перезагрузками
-  mkdir -p /var/lib/ipset
-  IPSET_STATE=/var/lib/ipset/ipset-bans.rules
-  if [[ -f "$IPSET_STATE" ]]; then
-      ipset flush ipset-block  2>/dev/null || true
+  if [[ -s "$IPSET_STATE" ]]; then
+  ipset flush ipset-block  2>/dev/null || true
       ipset flush ipset-block6 2>/dev/null || true
+      # ВАЖНО: читаем команды именно из дампа, иначе restore ничего не применит
       ipset restore -exist < "$IPSET_STATE" || true
   fi
 fi
@@ -437,6 +480,13 @@ while IFS= read -r NET; do
   ins filter INPUT -p udp --dport 5353 -s "$NET" -j ACCEPT
   ins filter INPUT -p tcp --dport 5353 -s "$NET" -j ACCEPT
 done < <(split_nets_v4)
+
+# 5354: только для Full-VPN (AGH OFF → DNAT 53 → 127.0.0.1:5354, kresd@2)
+while IFS= read -r NET; do
+  is_cidr_v4 "$NET" || { echo "⚠ bad CIDR $NET (DNS-5354) — пропущен"; continue; }
+  ins filter INPUT -p udp --dport 5354 -s "$NET" -j ACCEPT
+  ins filter INPUT -p tcp --dport 5354 -s "$NET" -j ACCEPT
+done < <(full_nets_v4)
 
 # Транзит VPN-подсетей
 while IFS= read -r NET; do
@@ -554,32 +604,6 @@ ipt6 -P INPUT   DROP      # политики DROP остаются
 ipt6 -P FORWARD DROP
 ipt6 -P OUTPUT  ACCEPT
 
-# ── 10. Fail2Ban и ipset-DROP ────────────────────────────────────────────────
-#F2B_START
-# 1.  Всегда подключаем ipset-DROP-правила (ручные баны начнут работать сразу)
-if [[ "$HAS_IPSET" == y ]]; then
-  ins  filter INPUT -m set --match-set ipset-block  src -j DROP
-  ins6 filter INPUT -m set --match-set ipset-block6 src -j DROP
-fi
-
-# 2.  Цепочки Fail2Ban
-if [[ "$SSH_PROTECTION" == y ]]; then
-  CHAINS=(f2b-sshd f2b-recidive)
-  [[ "$ADGUARD_HOME" == y ]] && CHAINS+=(f2b-adguard-panel)
-
-  for CH in "${CHAINS[@]}"; do
-    if ipt  -t filter -nL "$CH" &>/dev/null; then
-      ipt  -D INPUT -j "$CH" 2>/dev/null
-      ipt  -I INPUT 1 -j "$CH"
-    fi
-    if ipt6 -t filter -nL "$CH" &>/dev/null; then
-      ipt6 -D INPUT -j "$CH" 2>/dev/null
-      ipt6 -I INPUT 1 -j "$CH"
-    fi
-  done
-fi
-#F2B_END
-
 # ── 10-bis.  Подключаем дополнительные public-IP, нужные для SNAT ──
 declare -A EXT_ADDED
 for MAP in "${SNAT_MAP[@]}"; do
@@ -587,7 +611,7 @@ for MAP in "${SNAT_MAP[@]}"; do
     is_ip_v4 "$EXT" || { echo "⚠ bad IP $EXT — пропущен"; continue; }
     [[ -n ${EXT_ADDED[$EXT]+x} ]] && continue       # уже добавлен
     if ! ip -o -4 addr show dev "$INTERFACE" \
-            | awk '{print $4}' | cut -d/ -f1 | grep -qx "$EXT"; then
+            | awk '{split($4,a,"/"); print a[1]}' | grep -qx "$EXT"; then
         ip addr add "${EXT}/32" dev "$INTERFACE" label "$INTERFACE:snat"
     fi
     EXT_ADDED[$EXT]=1
@@ -656,6 +680,26 @@ while IFS= read -r NET; do
   is_cidr_v4 "$NET" || { echo "⚠ bad CIDR $NET (POSTROUTE) — пропущен"; continue; }
   add nat POSTROUTING -s "$NET" -o "$INTERFACE" -j MASQUERADE
 done < <(all_postroute)
+
+# ── 12.  Fail2ban: убрать ворнинг «allowipv6 not defined» и перезагрузить ─────
+if command -v fail2ban-client >/dev/null; then
+  F2B_JAIL_LOCAL=/etc/fail2ban/jail.local
+  # Если allowipv6 ещё не задан, аккуратно добавим его
+  if ! grep -q '^[[:space:]]*allowipv6[[:space:]]*=' "$F2B_JAIL_LOCAL" 2>/dev/null; then
+    install -d -m 755 /etc/fail2ban >/dev/null 2>&1 || true
+    if [[ -f "$F2B_JAIL_LOCAL" ]] && grep -q '^[[:space:]]*\[DEFAULT\]' "$F2B_JAIL_LOCAL"; then
+      printf '\n# set by up.sh to silence allowipv6 warning\nallowipv6 = auto\n' >> "$F2B_JAIL_LOCAL"
+    else
+      printf '[DEFAULT]\nallowipv6 = auto\n' >> "$F2B_JAIL_LOCAL"
+    fi
+  fi
+  # Перезагрузка только если включена SSH-защита, иначе просто reload допустим
+  if [[ "$SSH_PROTECTION" == y ]]; then
+    fail2ban-client reload || systemctl reload fail2ban || true
+  else
+    fail2ban-client reload || true
+  fi
+fi
 
 # скрипт дошёл до конца → страховка больше не нужна
 [[ -n "$AT_JOB_ID" ]] && command -v atrm &>/dev/null && atrm "$AT_JOB_ID"

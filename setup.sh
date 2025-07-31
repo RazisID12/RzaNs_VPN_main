@@ -259,7 +259,7 @@ apt-get update
 
 # Ставим необходимые пакеты
 apt-get install --reinstall -y git iptables gawk knot-resolver idn sipcalc python3-pip \
-                              wireguard-tools diffutils socat lua-cqueues ipset
+                              wireguard-tools diffutils socat lua-cqueues ipset at
 
 #  `yq --version` → «yq (…github…) version 4.44.2», поэтому ищем «version 4».
 if ! command -v yq >/dev/null 2>&1 \
@@ -724,7 +724,6 @@ done
 shopt -u nullglob
 
 # Загружаем и создаем списки исключений IP‑адресов
-# ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
 # Обновление баз (doall → update) в режиме **install**
 #   • INSTALL_STAGE=1 —> update.sh пропускает apt‑upgrade,
 #     AGH/F2B апгрейды и dump ipset‑банов.
@@ -733,7 +732,6 @@ export INSTALL_STAGE=1
 export NO_REBOOT=1
 /opt/rzans_vpn_main/doall.sh ip
 unset INSTALL_STAGE NO_REBOOT
-# ‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑‑
 
 # гарантируем, что каталоги уже существуют
 mkdir -p /etc/wireguard \
@@ -745,9 +743,9 @@ mkdir -p /etc/wireguard \
 # ── Включим сервисы и таймеры ────────────────────────────────────────────────
 systemctl daemon-reload
 
-# kresd-инстансы и wg
-for u in kresd@1 kresd@2 wg-quick@rzans_svpn_main wg-quick@rzans_fvpn_main; do
-  systemctl enable "$u" 2>/dev/null || true
+# kresd-инстансы, WireGuard и atd (нужен up.sh для аварийного отката)
+for u in kresd@1 kresd@2 wg-quick@rzans_svpn_main wg-quick@rzans_fvpn_main atd; do
+  systemctl enable --now "$u" 2>/dev/null || true
 done
 
 # ── core‑прокси и таймер обновлений ────────────────────────────────
