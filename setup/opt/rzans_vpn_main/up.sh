@@ -1,7 +1,6 @@
 # Up-script
 #!/bin/bash
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 umask 027
 
 #Подключаем общий модуль settings и приводим файл к эталону
@@ -300,9 +299,16 @@ if [[ "$FALLBACK_OK" == y ]]; then
 # ── аварийный откат через at (таймер из ROLLBACK_TIMEOUT) ───────────────
   if (( ROLLBACK_TIMEOUT > 0 )); then
     # shellcheck disable=SC2016
-AT_JOB_ID=$(
-  LC_ALL=C at "now + ${ROLLBACK_TIMEOUT} seconds" 2>&1 <<AT_EOF | \
-    sed -n 's/^job \([0-9]\+\) .*/\1/p' | head -n1
+    # «at» не понимает единицу *seconds* → переводим секунды в минуты (округление вверх)
+    FALLBACK_MIN=$(( (ROLLBACK_TIMEOUT + 59) / 60 ))
+    (( FALLBACK_MIN == 0 )) && FALLBACK_MIN=1
+    # Ставим задание в отдельную очередь Z и тихо игнорируем вывод
+    # Подчищаем очередь Z от старых заданий (если остались)
+    at -q Z -l | awk '$1 ~ /^[0-9]+$/ {print $1}' | xargs -r atrm
+    # Единица времени для красоты (1 minute vs minutes)
+    WORD=$([[ $FALLBACK_MIN -eq 1 ]] && echo minute || echo minutes)
+    # Ставим задание в отдельную очередь Z и подавляем вывод
+    LC_ALL=C at -q Z now + ${FALLBACK_MIN} ${WORD} >/dev/null 2>&1 <<AT_EOF
 # очистка таблиц
 iptables -F
 iptables -t nat -F
@@ -325,7 +331,7 @@ iptables -A INPUT -p udp --dport ${FVPN_PORT} -j ACCEPT
 
 # --- восстановление ipset‑банов ---------------------------------------
 if command -v ipset >/dev/null; then
-  if [[ -s "$IPSET_STATE" ]]; then
+  if [ -s "$IPSET_STATE" ]; then
     ipset flush ipset-block  2>/dev/null || true
     ipset flush ipset-block6 2>/dev/null || true
     ipset restore -exist < "$IPSET_STATE" || true
@@ -349,7 +355,8 @@ if ip6tables -L >/dev/null 2>&1; then
 fi
 
 AT_EOF
-) || AT_JOB_ID=""
+    # Берём ID последнего job в нашей очереди Z (достаточно для atrm позже)
+    AT_JOB_ID=$(at -q Z -l 2>/dev/null | awk 'END{if ($1 ~ /^[0-9]+$/) print $1}')
   else
     AT_JOB_ID=""
   fi
@@ -406,7 +413,7 @@ if [[ "$HAS_IPSET" == y ]]; then
   ipset create ipset-allow6  hash:net     family inet6            comment -exist
 
   # 5-bis. Восстановление банов между перезагрузками
-  if [[ -s "$IPSET_STATE" ]]; then
+  if [ -s "$IPSET_STATE" ]; then
   ipset flush ipset-block  2>/dev/null || true
       ipset flush ipset-block6 2>/dev/null || true
       # ВАЖНО: читаем команды именно из дампа, иначе restore ничего не применит
@@ -681,24 +688,9 @@ while IFS= read -r NET; do
   add nat POSTROUTING -s "$NET" -o "$INTERFACE" -j MASQUERADE
 done < <(all_postroute)
 
-# ── 12.  Fail2ban: убрать ворнинг «allowipv6 not defined» и перезагрузить ─────
-if command -v fail2ban-client >/dev/null; then
-  F2B_JAIL_LOCAL=/etc/fail2ban/jail.local
-  # Если allowipv6 ещё не задан, аккуратно добавим его
-  if ! grep -q '^[[:space:]]*allowipv6[[:space:]]*=' "$F2B_JAIL_LOCAL" 2>/dev/null; then
-    install -d -m 755 /etc/fail2ban >/dev/null 2>&1 || true
-    if [[ -f "$F2B_JAIL_LOCAL" ]] && grep -q '^[[:space:]]*\[DEFAULT\]' "$F2B_JAIL_LOCAL"; then
-      printf '\n# set by up.sh to silence allowipv6 warning\nallowipv6 = auto\n' >> "$F2B_JAIL_LOCAL"
-    else
-      printf '[DEFAULT]\nallowipv6 = auto\n' >> "$F2B_JAIL_LOCAL"
-    fi
-  fi
-  # Перезагрузка только если включена SSH-защита, иначе просто reload допустим
-  if [[ "$SSH_PROTECTION" == y ]]; then
-    fail2ban-client reload || systemctl reload fail2ban || true
-  else
-    fail2ban-client reload || true
-  fi
+# ── 12. Fail2ban: при SSH_PROTECTION=y просто перезагружаем ──────────────────
+if [[ "$SSH_PROTECTION" == y ]] && command -v fail2ban-client >/dev/null; then
+  fail2ban-client reload || systemctl reload fail2ban || true
 fi
 
 # скрипт дошёл до конца → страховка больше не нужна

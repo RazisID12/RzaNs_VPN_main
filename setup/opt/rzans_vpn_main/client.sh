@@ -39,8 +39,9 @@ if ! declare -F _render >/dev/null 2>&1; then
   }
 fi
 
-# проверяем критичные внешние бинари (yq — для AGH, uuidgen/wg — для W‑G)
-for bin in yq uuidgen wg; do
+# проверяем критичные внешние бинари (uuidgen/wg — для WireGuard; yq опционален)
+ # yq проверяем/используем только внутри add_agh_client/remove_agh_client
+for bin in uuidgen wg; do
   _have "$bin" || { echo "ERROR: '$bin' not found, abort." >&2; exit 127; }
 done
 
@@ -67,33 +68,41 @@ setServerHost(){
 # ────────────────────────────────────────────────────────────────────
 add_agh_client() {
     local ip="$1" mode="$2" nick="$3" agh=/opt/AdGuardHome/AdGuardHome.yaml
+    # Если AGH не установлен/не сконфигурирован — тихо выходим
     [[ -f $agh && -n $ip && -n $mode && -n $nick ]] || return 0
+    # yq опционален: отсутствие не должно ломать создание клиентов
+    _have yq || { echo "[WARN] yq not found, skip AdGuardHome client registration"; return 0; }
 
     local port uuid; [[ $mode == split ]] && port=5353 || port=5354
     uuid=$(uuidgen)
 
-    yq eval \
-      --arg ip   "$ip" \
-      --arg nick "$nick" \
-      --arg port "$port" \
-      --arg uuid "$uuid" \
-      '.clients.persistent //= []                                             |
-       (.clients.persistent[]?                                                |
-          select((.ids        // []) | index(strenv(ip)) and
-                 (.upstreams  // []) | index("127.0.0.1:" + strenv(port))))   |
-       as $c |
-       if $c then
-         ($c.name = strenv(nick)) |
-         ($c.upstreams = ["127.0.0.1:" + strenv(port)])
-       else
-         .clients.persistent += [{
-           name:              strenv(nick),
-           ids:               [strenv(ip)],
-           upstreams:         ["127.0.0.1:" + strenv(port)],
-           uid:               strenv(uuid),
-           use_global_settings: true
-         }]
-       end' -i "$agh"
+    # Единый стиль: значения через окружение, чтение в выражении через strenv(...)
+    if ! IP="$ip" NICK="$nick" PORT="$port" UUID="$uuid" \
+      yq eval '
+        .clients.persistent //= [] |
+        (
+          .clients.persistent[]?
+          | select(
+              (.ids       // []) | index(strenv(IP)) and
+              (.upstreams // []) | index("127.0.0.1:" + strenv(PORT))
+            )
+        ) as $c |
+        if $c then
+          ($c.name      = strenv(NICK)) |
+          ($c.upstreams = ["127.0.0.1:" + strenv(PORT)])
+        else
+          .clients.persistent += [{
+            name:                strenv(NICK),
+            ids:                 [strenv(IP)],
+            upstreams:           ["127.0.0.1:" + strenv(PORT)],
+            uid:                 strenv(UUID),
+            use_global_settings: true
+          }]
+        end
+      ' -i "$agh"; then
+        echo "[WARN] yq failed, skip AdGuardHome client registration (profiles are created)" >&2
+        return 0
+    fi
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
@@ -104,15 +113,19 @@ add_agh_client() {
 # ────────────────────────────────────────────────────────────────────
 remove_agh_client() {
     local nick="$1" agh=/opt/AdGuardHome/AdGuardHome.yaml
+    # Нет AGH или пустой ник — ничего не делаем
     [[ -f $agh && -n $nick ]] || return 0
+    _have yq || { echo "[WARN] yq not found, skip AdGuardHome client removal"; return 0; }
 
     # безопасно обрабатываем отсутствие блока clients.persistent
-    yq eval --arg nick "$nick" '
+    if ! NICK="$nick" yq eval '
       .clients.persistent = (
         (.clients.persistent // [])        # если блока нет → создаём []
-        | map(select(.name != strenv(nick)))  # фильтруем по имени
-      )
-    ' -i "$agh"
+        | map(select(.name != strenv(NICK)))  # фильтруем по имени
+      )' -i "$agh"; then
+        echo "[WARN] yq failed, skip AdGuardHome client removal" >&2
+        return 0
+    fi
 
     systemctl restart AdGuardHome >/dev/null 2>&1 || true
 }
