@@ -583,8 +583,10 @@ sed -i -E '/^[[:space:]]*DNS=/d' "$RESCONF"
 # формируем итоговую строку: IPv4 всегда, IPv6 добавляем только при доступном стеке
 DNS_LINE="DNS=${DNS4_1} ${DNS4_2}"
 [[ "$IPV6_AVAILABLE" == "y" ]] && DNS_LINE+=" ${DNS6_1} ${DNS6_2}"
-# вставляем строку только после ПЕРВОЙ секции [Resolve]
-sed -i "0,/^\[Resolve\]/{/^\[Resolve\]/a ${DNS_LINE}}" "$RESCONF"
+# вставляем строку только после ПЕРВОЙ секции [Resolve] (совместимо с GNU и BusyBox sed)
+sed -i "0,/^\[Resolve\]/{/^\[Resolve\]/a\\
+${DNS_LINE}
+}" "$RESCONF"
 
 # 3. /etc/network/interfaces — меняем *только* строки «dns‑nameservers»
 
