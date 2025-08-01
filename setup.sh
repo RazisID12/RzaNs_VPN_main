@@ -354,7 +354,13 @@ ERRORS=""
       systemctl stop AdGuardHome 2>/dev/null || true
       chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
   else
-      "$AGH_BIN" -s install
+      # запускаем встроенный инсталлятор *из каталога /opt*,  
+      # иначе он копирует текущий каталог внутрь себя и
+      # получается лишний уровень /opt/AdGuardHome/AdGuardHome
+      (
+        cd /opt
+        /opt/AdGuardHome/AdGuardHome -s install
+      )
       # после установки удостоверимся, что у каталога корректный владелец
       if id adguardhome &>/dev/null; then
         chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
