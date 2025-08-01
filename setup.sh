@@ -382,7 +382,6 @@ ERRORS=""
         || [[ -f /etc/systemd/system/adguardhome.service ]]; then
       echo "AdGuard Home service already exists — updating binary (start deferred)."
       systemctl stop AdGuardHome 2>/dev/null || true
-      chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
   else
       # ── НЕ вызываем -s install, а пишем unit вручную ───────────────
       cat >/etc/systemd/system/AdGuardHome.service <<'EOS'

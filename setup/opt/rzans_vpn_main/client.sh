@@ -137,7 +137,8 @@ initWireGuard(){
 
     # 1-bis) Загружаем ключи в окружение, чтобы render мог подставить ${PRIVATE_KEY}/${PUBLIC_KEY}
     #       (нужно даже если ключи созданы ранее)
-    source /etc/wireguard/key
+  source /etc/wireguard/key
+  export PRIVATE_KEY PUBLIC_KEY
 
     # 2) Всегда убеждаемся, что оба серверных конфига присутствуют
 
@@ -145,6 +146,9 @@ initWireGuard(){
         _render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/svpn.tmp
         sed -i -E "s|^Address *=.*|Address = ${SVPN_ADDR}|"       /tmp/svpn.tmp
         mv /tmp/svpn.tmp /etc/wireguard/rzans_svpn_main.conf
+    else
+        # CIDR мог измениться — обновляем Address даже в существующем файле
+        sed -i -E "s|^Address *=.*|Address = ${SVPN_ADDR}|" /etc/wireguard/rzans_svpn_main.conf
     fi
     sed -i -E "s/^ListenPort *=.*/ListenPort = ${SPLIT_PORT}/"     /etc/wireguard/rzans_svpn_main.conf
 
@@ -152,8 +156,20 @@ initWireGuard(){
         _render "/etc/wireguard/templates/rzans_vpn_main.conf" > /tmp/fvpn.tmp
         sed -i -E "s|^Address *=.*|Address = ${FVPN_ADDR}|"       /tmp/fvpn.tmp
         mv /tmp/fvpn.tmp /etc/wireguard/rzans_fvpn_main.conf
+    else
+        # CIDR мог измениться — обновляем Address даже в существующем файле
+        sed -i -E "s|^Address *=.*|Address = ${FVPN_ADDR}|" /etc/wireguard/rzans_fvpn_main.conf
     fi
     sed -i -E "s/^ListenPort *=.*/ListenPort = ${FULL_PORT}/"      /etc/wireguard/rzans_fvpn_main.conf
+  chmod 600 /etc/wireguard/rzans_{s,f}vpn_main.conf /etc/wireguard/key
+
+  # плейсхолдеры не должны остаться в серверных конфигах
+  for f in /etc/wireguard/rzans_{s,f}vpn_main.conf; do
+      if grep -Eq '\${[A-Z_]+}' "$f"; then
+          echo "ERROR: Unsubstituted variables found in $f" >&2
+          exit 8
+      fi
+  done
 }
 
 addWireGuard(){
@@ -172,11 +188,11 @@ addWireGuard(){
 
 # ключи могли ещё не существовать при опции 2/3/5
     [[ -f /etc/wireguard/key ]] && source /etc/wireguard/key || true
-    # файл /etc/wireguard/ips нужен не всегда: читаем безопасно
+    # файл /etc/wireguard/ips нужен не всегда: читаем безопасно и пересобираем SVPN_ALLOWED
     if [[ -f /etc/wireguard/ips ]]; then
         IPS=$(tr -s ' \n' ',' </etc/wireguard/ips | sed 's/^,//;s/,$//')
-        SVPN_ALLOWED="${SVPN_NET4}, ${VPN_MAP_DST4}${IPS:+, ${IPS}}"
     fi
+    SVPN_ALLOWED="${SVPN_NET4}, ${VPN_MAP_DST4}${IPS:+, ${IPS}}"
 
 	# RzaNs_sVPN_main
 
@@ -220,6 +236,8 @@ AllowedIPs = ${CLIENT_IP}/32
     install -d "/opt/rzans_vpn_main/client/rzans_svpn_main" "/opt/rzans_vpn_main/client/rzans_fvpn_main"
     SERVER_PORT=$SPLIT_PORT
     export SVPN_DNS_IP SVPN_ALLOWED
+    # переменные, необходимые для рендера клиентского файла (envsubst)
+    export CLIENT_PRIVATE_KEY CLIENT_PRESHARED_KEY CLIENT_IP PUBLIC_KEY SERVER_HOST SERVER_PORT
     SPLIT_FILE="/opt/rzans_vpn_main/client/rzans_svpn_main/RzaNs_sVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
     _render "/etc/wireguard/templates/rzans_svpn_main.conf" >"$SPLIT_FILE"
     chmod 600 "$SPLIT_FILE"
@@ -267,9 +285,18 @@ AllowedIPs = ${CLIENT_IP}/32
     SERVER_PORT=$FULL_PORT
     # экспортируем DNS IP для full-профиля (если используется в шаблоне)
     export FVPN_DNS_IP
+    export CLIENT_PRIVATE_KEY CLIENT_PRESHARED_KEY CLIENT_IP PUBLIC_KEY SERVER_HOST SERVER_PORT
     FULL_FILE="/opt/rzans_vpn_main/client/rzans_fvpn_main/RzaNs_fVPN_main-${CLIENT_NAME}-(${SERVER_HOST}).conf"
     _render "/etc/wireguard/templates/rzans_fvpn_main.conf" >"$FULL_FILE"
     chmod 600 "$FULL_FILE"
+
+    # валидация: не осталось ли необработанных ${VARS}
+    for f in "$SPLIT_FILE" "$FULL_FILE"; do
+        if grep -Eq '\${[A-Z_]+}' "$f"; then
+            echo "ERROR: Unsubstituted variables found in $f" >&2
+            exit 7
+        fi
+    done
 
     # AGH persistent entry для Full-VPN
     add_agh_client "$CLIENT_IP" "full" "$CLIENT_NAME"
@@ -399,11 +426,14 @@ SVPN_NET4=$(settings_get_tag SVPN_NET4 "10.29.8.0/24")
 FVPN_NET4=$(settings_get_tag FVPN_NET4 "10.28.8.0/24")
 VPN_MAP_DST4=$(settings_get_tag VPN_MAP_DST4 "10.30.0.0/15")
 
-# адреса и DNS‑IP считаем единым helper'ом
+# адреса и DNS-IP считаем единым helper'ом
 vpn_addrs_from_cidrs "$SVPN_NET4" "$FVPN_NET4" \
   || { echo "Bad SVPN_NET4/FVPN_NET4: '$SVPN_NET4' / '$FVPN_NET4'"; exit 1; }
 
-# список, пригодный для AllowedIPs в шаблоне (IPS может быть пустым)
+# сначала читаем IPS (если есть), и только затем формируем SVPN_ALLOWED
+if [[ -f /etc/wireguard/ips ]]; then
+  IPS=$(tr -s ' \n' ',' </etc/wireguard/ips | sed 's/^,//;s/,$//')
+fi
 SVPN_ALLOWED="${SVPN_NET4}, ${VPN_MAP_DST4}${IPS:+, ${IPS}}"
 # --- выбираем адрес/домен сервера для Endpoint ------------------------------
 # 1) WIREGUARD_HOST из settings.map (если задан и непустой)
