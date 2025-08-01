@@ -57,7 +57,18 @@ askClientName(){
 
 # устанавливаем SERVER_HOST (домен или IP) для Endpoint-а и имени файла
 setServerHost(){
-    [[ -n "$1" ]] && SERVER_HOST="$1" || SERVER_HOST="$SERVER_IP"
+    local arg="${1:-}"
+    # Если в settings задан домен (и это не пустая строка/две кавычки) — используем его,
+    # иначе берём вычисленный IP (SERVER_IP).
+    if [[ -n "$arg" && "$arg" != '""' ]]; then
+        arg=${arg//\"/}
+        # trim leading/trailing whitespace
+        arg="${arg#"${arg%%[![:space:]]*}"}"
+        arg="${arg%"${arg##*[![:space:]]}"}"
+        SERVER_HOST="$arg"
+    else
+        SERVER_HOST="$SERVER_IP"
+    fi
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -445,19 +456,21 @@ EXTIP4_RAW=$(settings_get_tag EXTIP4 "0.0.0.0" | awk '{print $1}')  # отбра
 
 valid_ip4() { [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 
+# 1) Надёжно определяем IP для fallback/backup (независимо от домена)
+if [[ "$EXTIP4_RAW" != "0.0.0.0" ]] && valid_ip4 "$EXTIP4_RAW"; then
+  SERVER_IP=$EXTIP4_RAW
+else
+  SERVER_IP=$(ip -o -4 addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
+  [[ -z "$SERVER_IP" ]] && { echo 'Global IPv4 not found'; exit 2; }
+fi
+# 2) Хост для Endpoint/имени файла: домен (если задан), иначе IP
 if [[ -n "$WIREGUARD_HOST" && "$WIREGUARD_HOST" != '""' ]]; then
   SERVER_HOST=${WIREGUARD_HOST//\"/}
-elif [[ "$EXTIP4_RAW" != "0.0.0.0" ]] && valid_ip4 "$EXTIP4_RAW"; then
-  SERVER_HOST=$EXTIP4_RAW
 else
-  SERVER_HOST=$(ip -o -4 addr show scope global \
-                | awk '{print $4}' | cut -d/ -f1 | head -1)
-  [[ -z "$SERVER_HOST" ]] && { echo 'Global IPv4 not found'; exit 2; }
+  SERVER_HOST="$SERVER_IP"
 fi
 
-# для функций backup() / setServerHost
-SERVER_IP=$SERVER_HOST
-
+# ───── аргументы командной строки ──────────
 OPTION=${1:-}
 CLIENT_NAME=${2:-}
 
