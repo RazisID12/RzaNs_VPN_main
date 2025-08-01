@@ -302,8 +302,7 @@ ERRORS=""
   echo
   echo -e '\e[1;36mInstalling AdGuard Home...\e[0m'
   
-  mkdir -p /opt/AdGuardHome
-  cd /opt/AdGuardHome || exit 8
+  AGH_DST="/opt/AdGuardHome"   # целевой каталог, всегда /opt/AdGuardHome
 
   # универсальная загрузка с SHA256
   agh_base="https://static.adtidy.org/adguardhome/release"
@@ -332,20 +331,51 @@ ERRORS=""
   if ! echo "${agh_ref_sha}  $agh_tar" | sha256sum -c - --status; then
       echo "✗ AdGuard Home checksum mismatch"; exit 9
   fi
-  # на всякий случай остановим сервис до замены файлов (если он есть)
+  # Остановим сервис и пересоздадим целевой каталог «с нуля»
   systemctl stop AdGuardHome 2>/dev/null || true
-  # Полностью очищаем рабочий каталог и распаковываем архив,
-  # удаляя верхний каталог AdGuardHome/ → файлы ложатся прямо в /opt/AdGuardHome
-  rm -rf /opt/AdGuardHome/* 2>/dev/null || true
-  tar -xzf "$agh_tar" --strip-components=1 -C /opt/AdGuardHome
+  rm -rf "${AGH_DST}" 2>/dev/null || true
+  install -d "${AGH_DST}"
+
+  # Распаковка во временный каталог с последующим переносом содержимого
+  AGH_UNPACK="$TMP_DIR/agh_unpack"
+  install -d "$AGH_UNPACK"
+  tar -xzf "$agh_tar" -C "$AGH_UNPACK"
+  if [[ -d "$AGH_UNPACK/AdGuardHome" ]]; then
+      AGH_SRC="$AGH_UNPACK/AdGuardHome"
+  else
+      AGH_SRC="$AGH_UNPACK"
+  fi
+  # переносим содержимое, безопасно обрабатывая пустой каталог
+  shopt -s dotglob nullglob
+  files=( "$AGH_SRC"/* )
+  if (( ${#files[@]} )); then
+      mv "${files[@]}" "${AGH_DST}/"
+  fi
+  shopt -u dotglob nullglob
+  rmdir "$AGH_SRC" 2>/dev/null || true
+  # На всякий случай «сплющим» вложенный каталог, если вдруг появился
+  if [[ -d "${AGH_DST}/AdGuardHome" ]]; then
+      shopt -s dotglob
+      mv "${AGH_DST}/AdGuardHome"/* "${AGH_DST}/" 2>/dev/null || true
+      shopt -u dotglob
+      rmdir "${AGH_DST}/AdGuardHome" 2>/dev/null || true
+  fi
 
   # Бинарник должен лежать по пути /opt/AdGuardHome/AdGuardHome
-  AGH_BIN="/opt/AdGuardHome/AdGuardHome"
-  [[ -x "$AGH_BIN" ]] || AGH_BIN="$(find /opt/AdGuardHome -maxdepth 2 -type f -name AdGuardHome -perm -111 | head -n1)"
-  if [[ -z "${AGH_BIN:-}" || ! -x "$AGH_BIN" ]]; then
+  AGH_BIN="${AGH_DST}/AdGuardHome"
+  if [[ ! -f "$AGH_BIN" || ! -x "$AGH_BIN" ]]; then
+      AGH_BIN="$(find "${AGH_DST}" -maxdepth 2 -type f -name AdGuardHome -perm -111 | head -n1)"
+  fi
+  if [[ -z "${AGH_BIN:-}" || ! -f "$AGH_BIN" || ! -x "$AGH_BIN" ]]; then
       echo "✗ AdGuard Home binary not found after extract"; exit 12
   fi
 
+  # Создаём системного пользователя для безопасного запуска сервиса
+  if ! id adguardhome &>/dev/null; then
+      useradd --system --home-dir "${AGH_DST}" --shell /usr/sbin/nologin adguardhome
+  fi
+  chown -R adguardhome:adguardhome "${AGH_DST}" 2>/dev/null || true
+  
   # Если сервис уже установлен (unit-файл существует) — только обновляем бинарник и перезапускаем
   if systemctl list-unit-files | grep -qiE '^(AdGuardHome|adguardhome)\.service' \
         || [[ -f /etc/systemd/system/AdGuardHome.service ]] \
@@ -365,12 +395,25 @@ Wants=network-online.target
 WorkingDirectory=/opt/AdGuardHome
 ExecStart=/opt/AdGuardHome/AdGuardHome -s run
 Restart=on-failure
+User=adguardhome
+Group=adguardhome
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target
 EOS
 
       systemctl daemon-reload
+  fi
+
+  # финальная проверка на отсутствие вложенного каталога после всех действий
+  if [[ -d "${AGH_DST}/AdGuardHome" ]]; then
+      shopt -s dotglob
+      mv "${AGH_DST}/AdGuardHome"/* "${AGH_DST}/" 2>/dev/null || true
+      shopt -u dotglob
+      rmdir "${AGH_DST}/AdGuardHome" 2>/dev/null || true
   fi
   
   # ── подготовим лог-файл под Fail2Ban ──────────────────────────
@@ -381,10 +424,8 @@ EOS
   mkdir -p "$LOG_DIR"
   touch "$LOG_FILE"
 
-  # если система уже добавила пользователя adguardhome – дадим ему права
-  if id "adguardhome" &>/dev/null; then
-    chown adguardhome:adguardhome "$LOG_DIR" "$LOG_FILE"
-  fi
+  # права на лог — под пользователя сервиса
+  chown adguardhome:adguardhome "$LOG_DIR" "$LOG_FILE"
 
   # ── logrotate: ротация access.log (daily / 50 МБ, 7 копий) ────────────────
   LOGROT="/etc/logrotate.d/adguardhome"
