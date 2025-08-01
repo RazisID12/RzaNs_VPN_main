@@ -354,13 +354,13 @@ ERRORS=""
       systemctl stop AdGuardHome 2>/dev/null || true
       chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
   else
-      # запускаем встроенный инсталлятор *из каталога /opt*,  
-      # иначе он копирует текущий каталог внутрь себя и
-      # получается лишний уровень /opt/AdGuardHome/AdGuardHome
-      (
-        cd /opt
-        /opt/AdGuardHome/AdGuardHome -s install
-      )
+      # регистрируем сервис, ЯВНО задав рабочий каталог.
+      # "--work-dir /opt/AdGuardHome" избавляет от эффекта
+      # «/opt/AdGuardHome/AdGuardHome», т.к. инсталлятор больше
+      # не пытается копировать содержимое текущего каталога.
+      /opt/AdGuardHome/AdGuardHome \
+          --work-dir /opt/AdGuardHome \
+          --service install
       # после установки удостоверимся, что у каталога корректный владелец
       if id adguardhome &>/dev/null; then
         chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
