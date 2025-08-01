@@ -334,7 +334,8 @@ ERRORS=""
   fi
   # на всякий случай остановим сервис до замены файлов (если он есть)
   systemctl stop AdGuardHome 2>/dev/null || true
-  # Полностью очищаем рабочий каталог и распаковываем архив, убирая верхний каталог AdGuardHome/
+  # Полностью очищаем рабочий каталог и распаковываем архив,
+  # удаляя верхний каталог AdGuardHome/ → файлы ложатся прямо в /opt/AdGuardHome
   rm -rf /opt/AdGuardHome/* 2>/dev/null || true
   tar -xzf "$agh_tar" --strip-components=1 -C /opt/AdGuardHome
 
