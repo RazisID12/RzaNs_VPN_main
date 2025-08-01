@@ -358,8 +358,8 @@ ERRORS=""
       # "--work-dir /opt/AdGuardHome" избавляет от эффекта
       # «/opt/AdGuardHome/AdGuardHome», т.к. инсталлятор больше
       # не пытается копировать содержимое текущего каталога.
-      /opt/AdGuardHome/AdGuardHome \
-          --work-dir /opt/AdGuardHome \
+      /opt \
+          --work-dir /opt \
           --service install
       # после установки удостоверимся, что у каталога корректный владелец
       if id adguardhome &>/dev/null; then
