@@ -354,17 +354,23 @@ ERRORS=""
       systemctl stop AdGuardHome 2>/dev/null || true
       chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
   else
-      # регистрируем сервис, ЯВНО задав рабочий каталог.
-      # "--work-dir /opt/AdGuardHome" избавляет от эффекта
-      # «/opt/AdGuardHome/AdGuardHome», т.к. инсталлятор больше
-      # не пытается копировать содержимое текущего каталога.
-      /opt \
-          --work-dir /opt \
-          --service install
-      # после установки удостоверимся, что у каталога корректный владелец
-      if id adguardhome &>/dev/null; then
-        chown -R adguardhome:adguardhome /opt/AdGuardHome 2>/dev/null || true
-      fi
+      # ── НЕ вызываем -s install, а пишем unit вручную ───────────────
+      cat >/etc/systemd/system/AdGuardHome.service <<'EOS'
+[Unit]
+Description=AdGuard Home
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/AdGuardHome
+ExecStart=/opt/AdGuardHome/AdGuardHome -s run
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOS
+
+      systemctl daemon-reload
   fi
   
   # ── подготовим лог-файл под Fail2Ban ──────────────────────────
