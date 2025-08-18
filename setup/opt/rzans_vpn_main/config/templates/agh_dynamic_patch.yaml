@@ -9,15 +9,15 @@ ${BIND_BLOCK}
     - ${KRESD3_IP}:${DNS_PORT}
 
   bootstrap_dns:
-    - ${v4a}
-    - ${v4b}
-    - ${v6a}
-    - ${v6b}
+    - ${ipv4a}
+    - ${ipv4b}
+    - ${ipv6a}
+    - ${ipv6b}
   fallback_dns:
-    - ${v4a}
-    - ${v4b}
-    - ${v6a}
-    - ${v6b}
+    - ${ipv4a}
+    - ${ipv4b}
+    - ${ipv6a}
+    - ${ipv6b}
 
   allowed_clients:
     - ${SVPN_NET4}

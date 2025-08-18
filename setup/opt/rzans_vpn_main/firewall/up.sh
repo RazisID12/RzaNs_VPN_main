@@ -143,7 +143,7 @@ read_settings() {
   VPN_MAP_DST4="$(yaml_get 'vpn.map_dns' '10.30.0.0/15')"
   
   # DoT параметры кешируем заранее, чтобы дальше не читать YAML под возможной гонкой
-  read -r DOT_URL DOT_PORT < <(yaml_upstream_dot)
+  read -r DOT_URL DOT_PORT < <(yaml_dot)
   DOT_PORT="${DOT_PORT:-853}"
 }
 

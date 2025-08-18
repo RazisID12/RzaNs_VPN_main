@@ -190,8 +190,8 @@ dot_ipset_sync() {
     _locked=1
   fi
 
-  # Читаем «квадру» (v4a v4b v6a v6b)
-  readarray -t Q < <(yaml_upstream_quad | tr -d '\r')
+  # Читаем «квадру» (ipv4a ipv4b ipv6a ipv6b)
+  readarray -t Q < <(yaml_bootstrap | tr -d '\r')
 
   # Уникальные имена временных наборов (чтобы параллельные запуски не пересекались)
   local SUF; SUF=".$$-$RANDOM"
@@ -661,44 +661,42 @@ yaml_set() {
   return 0            # всегда 0, даже если файл не менялся
 }
 
-yaml_upstream_quad() {
-  case "$(yaml_get 'dns.upstream' cloudflare | tr '[:upper:]' '[:lower:]')" in
+# Единый резолвер профиля апстрима: всё берём из dns.upstream; порт — из dns.port_tls.
+__upstream_resolve() {
+  local up port
+  up="$(yaml_get 'dns.upstream' cloudflare | tr '[:upper:]' '[:lower:]')"
+  port="$(yaml_get 'dns.port_tls' 853)"
+  case "$up" in
     quad9)
-      printf '%s\n' 9.9.9.10 149.112.112.10 \
-                     2620:fe::10 2620:fe::fe:10 | tr -d '\r' ;;
+      UP_IPV4A='9.9.9.10';             UP_IPV4B='149.112.112.10'
+      UP_IPV6A='2620:fe::10';          UP_IPV6B='2620:fe::fe:10'
+      UP_DOT='tls://dns10.quad9.net'
+      ;;
     google)
-      printf '%s\n' 8.8.8.8 8.8.4.4 \
-                     2001:4860:4860::8888 2001:4860:4860::8844 | tr -d '\r' ;;
+      UP_IPV4A='8.8.8.8';              UP_IPV4B='8.8.4.4'
+      UP_IPV6A='2001:4860:4860::8888'; UP_IPV6B='2001:4860:4860::8844'
+      UP_DOT='tls://dns.google'
+      ;;
     *)
-      printf '%s\n' 1.1.1.1 1.0.0.1 \
-                     2606:4700:4700::1111 2606:4700:4700::1001 | tr -d '\r' ;;
+      # cloudflare (по умолчанию)
+      UP_IPV4A='1.1.1.1';              UP_IPV4B='1.0.0.1'
+      UP_IPV6A='2606:4700:4700::1111'; UP_IPV6B='2606:4700:4700::1001'
+      UP_DOT='tls://one.one.one.one'
+      ;;
   esac
+  UP_TLS_PORT="$port"
 }
 
-# Вернуть DoT URL (tls://…) и порт_tls: prefer явные dns.dot/dns.port_tls, иначе — по upstream.
-yaml_upstream_dot() {
-  local up dot_url port
-  up="$(yaml_get 'dns.upstream' cloudflare | tr '[:upper:]' '[:lower:]')"
-  # Новые ключи без fallback’ов
-  local dot_cfg; dot_cfg="$(yaml_get 'dns.dot' '')"
-  local prt_cfg; prt_cfg="$(yaml_get 'dns.port_tls' 853)"
-  if [[ -n "$dot_cfg" && "${dot_cfg,,}" != "auto" ]]; then
-    # Нормализуем префикс tls://
-    if [[ "$dot_cfg" == tls://* ]]; then
-      dot_url="$dot_cfg"
-    else
-      dot_url="tls://$dot_cfg"
-    fi
-    port="$prt_cfg"
-  else
-    case "$up" in
-      quad9)  dot_url="tls://dns10.quad9.net" ;;
-      google) dot_url="tls://dns.google" ;;
-      *)      dot_url="tls://one.one.one.one" ;;   # cloudflare (default)
-    esac
-    port="$prt_cfg"
-  fi
-  printf '%s\t%s\n' "$dot_url" "$port"
+# Квадра апстрима (ipv4a ipv4b ipv6a ipv6b) — строго из dns.upstream
+yaml_bootstrap() {
+  __upstream_resolve
+  printf '%s\n' "$UP_IPV4A" "$UP_IPV4B" "$UP_IPV6A" "$UP_IPV6B" | tr -d '\r'
+}
+
+# DoT URL и порт TLS: URL — из dns.upstream; порт — из dns.port_tls.
+yaml_dot() {
+  __upstream_resolve
+  printf '%s\t%s\n' "$UP_DOT" "$UP_TLS_PORT"
 }
 
 #──────────────────────────────────────────────────────────────────────────────
@@ -889,17 +887,17 @@ remove_snat() {
 update_dns_ips() {
   _ensure_settings_lock || return 1
   _ensure_settings_yaml
-  local ips=(); mapfile -t ips < <(yaml_upstream_quad)   # 0-3: v4a v4b v6a v6b
-  local v4a=${ips[0]} v4b=${ips[1]} v6a=${ips[2]} v6b=${ips[3]}
+  local ips=(); mapfile -t ips < <(yaml_bootstrap)   # 0-3: ipv4a ipv4b ipv6a ipv6b
+  local ipv4a=${ips[0]} ipv4b=${ips[1]} ipv6a=${ips[2]} ipv6b=${ips[3]}
   local DOT_URL DOT_PORT
-  read -r DOT_URL DOT_PORT < <(yaml_upstream_dot)
+  read -r DOT_URL DOT_PORT < <(yaml_dot)
 
   # Собираем косметические строки: "up://A | B" (второй может отсутствовать)
   local IPV4_STR=""; local IPV6_STR=""
-  [[ -n "$v4a" ]] && IPV4_STR="up://$v4a"
-  [[ -n "$v4b" ]] && IPV4_STR="${IPV4_STR} | $v4b"
-  [[ -n "$v6a" ]] && IPV6_STR="up://$v6a"
-  [[ -n "$v6b" ]] && IPV6_STR="${IPV6_STR} | $v6b"
+  [[ -n "$ipv4a" ]] && IPV4_STR="up://$ipv4a"
+  [[ -n "$ipv4b" ]] && IPV4_STR="${IPV4_STR} | $ipv4b"
+  [[ -n "$ipv6a" ]] && IPV6_STR="up://$ipv6a"
+  [[ -n "$ipv6b" ]] && IPV6_STR="${IPV6_STR} | $ipv6b"
 
   local TMP; TMP="$(mktemp)"
   IPV4_STR="$IPV4_STR" IPV6_STR="$IPV6_STR" DOT_URL="$DOT_URL" DOT_PORT="$DOT_PORT" \
@@ -1000,7 +998,7 @@ autofill_settings() {
 _update_system_upstream() {
   # читаем 4 адреса (2×IPv4 + 2×IPv6) построчно
   local _dns=() DNS4_1 DNS4_2 DNS6_1 DNS6_2
-  readarray -t _dns < <(yaml_upstream_quad)
+  readarray -t _dns < <(yaml_bootstrap)
   DNS4_1="${_dns[0]}"; DNS4_2="${_dns[1]}"
   DNS6_1="${_dns[2]}"; DNS6_2="${_dns[3]}"
 
@@ -1183,12 +1181,12 @@ agh_heal() {
   [[ $_had_lock -eq 0 ]] && trap '_release_settings_lock' RETURN
 
   # ── 1. собираем переменные из settings.yaml ─────────────────────
-  local SVPN_NET4 FVPN_NET4 v4a v4b v6a v6b _quad=()
+  local SVPN_NET4 FVPN_NET4 ipv4a ipv4b ipv6a ipv6b _quad=()
   SVPN_NET4=$(yaml_get 'vpn.nets.split' 10.29.8.0/24)
   FVPN_NET4=$(yaml_get 'vpn.nets.full'  10.28.8.0/24)
   # читаем 4 адреса построчно (read читает только одну строку; нужен readarray)
-  readarray -t _quad < <(yaml_upstream_quad)
-  v4a="${_quad[0]}"; v4b="${_quad[1]}"; v6a="${_quad[2]}"; v6b="${_quad[3]}"
+  readarray -t _quad < <(yaml_bootstrap)
+  ipv4a="${_quad[0]}"; ipv4b="${_quad[1]}"; ipv6a="${_quad[2]}"; ipv6b="${_quad[3]}"
   vpn_addrs_from_cidrs "$SVPN_NET4" "$FVPN_NET4" || return 1
 
   # bootstrap (v4+v6) — одной строкой; TRUST_BLOCK — с реальными \n и отступами
@@ -1216,7 +1214,7 @@ agh_heal() {
   {
     # переменные, которые подставляются в agh_dynamic_patch.yaml
     export SVPN_IP FVPN_IP SVPN_NET4 FVPN_NET4
-    export v4a v4b v6a v6b
+    export ipv4a ipv4b ipv6a ipv6b
     export ALLOW_BLOCK="$ALLOW_BLOCK"
     export GUI_ADDR BIND_BLOCK
     export KRESD1_IP KRESD2_IP KRESD3_IP KRESD4_IP PROXY_IP AGH_IP DNS_PORT
@@ -1276,29 +1274,29 @@ agh_heal() {
 #   @3 — SPLIT (IPv4-only, lists) → @1
 #   @4 — FULL  (IPv4-only) → @1
 kresd_upstream() {
-  # Читаем «квадру» апстримов: v4a v4b v6a v6b
+  # Читаем «квадру» апстримов: ipv4a ipv4b ipv6a ipv6b
   local _had_lock=0
   [[ -n "${_SETTINGS_LOCK_FD:-}" ]] && _had_lock=1
   _ensure_settings_lock || return 1
   [[ $_had_lock -eq 0 ]] && trap '_release_settings_lock' RETURN
   local ips=()
-  readarray -t ips < <(yaml_upstream_quad)   # 0-3
-  local v4a="${ips[0]}" v4b="${ips[1]}" v6a="${ips[2]}" v6b="${ips[3]}"
+  readarray -t ips < <(yaml_bootstrap)   # 0-3
+  local ipv4a="${ips[0]}" ipv4b="${ips[1]}" ipv6a="${ips[2]}" ipv6b="${ips[3]}"
   local DOT_URL DOT_PORT
-  read -r DOT_URL DOT_PORT < <(yaml_upstream_dot)
+  read -r DOT_URL DOT_PORT < <(yaml_dot)
 
   # Экранируем одинарные кавычки на случай форматов вида 1.1.1.1#853
-  local v4a_e=${v4a//\'/\\\'}
-  local v4b_e=${v4b//\'/\\\'}
-  local v6a_e=${v6a//\'/\\\'}
-  local v6b_e=${v6b//\'/\\\'}
+  local ipv4a_e=${ipv4a//\'/\\\'}
+  local ipv4b_e=${ipv4b//\'/\\\'}
+  local ipv6a_e=${ipv6a//\'/\\\'}
+  local ipv6b_e=${ipv6b//\'/\\\'}
 
   # Раздельные списки для v4/v6
   local -a UP4_LIST=() UP6_LIST=()
-  [[ -n $v4a ]] && UP4_LIST+=("'${v4a_e}'")
-  [[ -n $v4b ]] && UP4_LIST+=("'${v4b_e}'")
-  [[ -n $v6a ]] && UP6_LIST+=("'${v6a_e}'")
-  [[ -n $v6b ]] && UP6_LIST+=("'${v6b_e}'")
+  [[ -n $ipv4a ]] && UP4_LIST+=("'${ipv4a_e}'")
+  [[ -n $ipv4b ]] && UP4_LIST+=("'${ipv4b_e}'")
+  [[ -n $ipv6a ]] && UP6_LIST+=("'${ipv6a_e}'")
+  [[ -n $ipv6b ]] && UP6_LIST+=("'${ipv6b_e}'")
 
   # Sanity check: если апстримов нет — не трогаем файл и не перезапускаем kresd
   if ((${#UP4_LIST[@]} + ${#UP6_LIST[@]} == 0)); then
@@ -1369,7 +1367,7 @@ _fw_del_in_by_comment() {
 }
 
 fw_sync_dot_port() {
-  read -r _ DOT_PORT < <(yaml_upstream_dot); DOT_PORT="${DOT_PORT:-853}"
+  read -r _ DOT_PORT < <(yaml_dot); DOT_PORT="${DOT_PORT:-853}"
   local KRESD_UID; KRESD_UID="$(id -u knot-resolver 2>/dev/null || id -u kresd 2>/dev/null || echo '')"
 
   # Сносим старые правила по комментариям (v4 и v6) — на случай смены порта
