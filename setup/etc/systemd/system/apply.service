@@ -1,0 +1,6 @@
+[Unit]
+Description=Apply settings.yaml changes (scoped)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/settings/dispatcher.sh

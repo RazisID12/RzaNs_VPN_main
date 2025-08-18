@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch /opt/rzans_vpn_main/settings.yaml and apply scoped changes
+
+[Path]
+PathChanged=/opt/rzans_vpn_main/settings.yaml
+PathModified=/opt/rzans_vpn_main/settings.yaml
+Unit=apply.service
+
+[Install]
+WantedBy=multi-user.target

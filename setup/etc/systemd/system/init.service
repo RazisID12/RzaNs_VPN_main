@@ -1,0 +1,15 @@
+[Unit]
+Description=One-time: disable systemd-resolved and switch system DNS to local
+Before=AdGuardHome.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service core.service
+ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --switch-system-resolve
+# Само-выключение и само-удаление после успешного прогона:
+ExecStartPost=/usr/bin/systemctl disable --now init.service
+ExecStartPost=/bin/rm -f /etc/systemd/system/init.service
+ExecStartPost=/usr/bin/systemctl daemon-reload
+
+[Install]
+WantedBy=multi-user.target

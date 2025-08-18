@@ -1,0 +1,67 @@
+# ========================================================================================
+# settings.yaml (минимальный автосозданный шаблон)
+# ========================================================================================
+# 1) ─── Базовые параметры ───────────────────────────────────────────────────────────────
+server:
+# SSH:
+  port_ssh: 22
+# Домен:
+  domain: auto                                              # auto = пусто
+# Внешние IP:
+  ipv4: auto                                                # auto = 0.0.0.0
+  ipv6: auto                                                # auto = ::
+# Вышестоящий DNS: cloudflare | quad9 | google
+dns:
+  upstream: cloudflare
+  # авто-заполнение:
+  ipv4: up://1.1.1.1 | 1.0.0.1
+  ipv6: up://2606:4700:4700::1111 | 2606:4700:4700::1001
+  dot: tls://one.one.one.one
+  port_tls: 853
+# 2) ─── Параметры безопасности ──────────────────────────────────────────────────────────
+# Доверенные IPv4/IPv6 для SSH/Fail2ban/AdGuard Home:
+allowip:
+  ipv4: auto                                                # auto = 0.0.0.0 ⇒ SSH по IPv4 открыт для всех
+  ipv6: auto                                                # auto = ::      ⇒ SSH по IPv6 закрыт для всех
+# Откат защиты:
+rollback_timeout: 180
+# 3) ─── Параметры VPN ───────────────────────────────────────────────────────────────────
+vpn:
+# Порты:
+  ports:
+    split: 500                                              # Для Split VPN
+    full: 4500                                              # Для Full  VPN
+# Подсети IPv4:
+  nets:
+    split: 10.29.8.0/24                                     # Для Split VPN
+    full: 10.28.8.0/24                                      # Для Full  VPN
+# Fake-IP диапазон для proxy.py:
+  map_dns: 10.30.0.0/15
+# SNAT name: <internal IP> <external IP>:
+snat: []
+# 4) ─── Сервисы ─────────────────────────────────────────────────────────────────────────
+# Fail2ban:
+fail2ban:
+  enable: false
+  # авто-заполнение:
+  version: v0.0.0
+  updated: dd.mm.yyyy
+# AdGuard Home:
+adguard_home:
+  enable: false
+  # авто-заполнение:
+  version: v0.0.0
+  updated: dd.mm.yyyy
+# 5) ─── Маршрутизация (doall.sh) ────────────────────────────────────────────────────────
+routing:
+  route_all: false
+  flags:
+    discord: true
+    cloudflare: true
+    amazon: false
+    hetzner: false
+    digitalocean: false
+    ovh: false
+    telegram: false
+    google: false
+    akamai: false

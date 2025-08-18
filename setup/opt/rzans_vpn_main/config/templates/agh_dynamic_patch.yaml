@@ -1,0 +1,25 @@
+http:
+  address: ${GUI_ADDR}
+
+dns:
+  bind_hosts:
+${BIND_BLOCK}
+
+  upstream_dns:
+    - ${KRESD3_IP}:${DNS_PORT}
+
+  bootstrap_dns:
+    - ${v4a}
+    - ${v4b}
+    - ${v6a}
+    - ${v6b}
+  fallback_dns:
+    - ${v4a}
+    - ${v4b}
+    - ${v6a}
+    - ${v6b}
+
+  allowed_clients:
+    - ${SVPN_NET4}
+    - ${FVPN_NET4}
+${ALLOW_BLOCK}
