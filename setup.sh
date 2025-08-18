@@ -284,7 +284,7 @@ apt-get update
 # Ставим необходимые пакеты
 apt-get -o Dpkg::Options::=--force-confdef \
         -o Dpkg::Options::=--force-confold \
-        install --reinstall -y git iptables gawk knot-resolver sipcalc python3 python3-pip \
+        install --reinstall -y git iptables gawk knot-resolver dns-root-data sipcalc python3 python3-pip \
                               wireguard-tools diffutils socat lua-cqueues ipset at file \
                               libcap2-bin logrotate gettext-base ca-certificates
 #
