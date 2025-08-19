@@ -284,7 +284,7 @@ apt-get update
 # Ставим необходимые пакеты
 apt-get -o Dpkg::Options::=--force-confdef \
         -o Dpkg::Options::=--force-confold \
-        install --reinstall -y git iptables gawk knot-resolver dns-root-data sipcalc python3 python3-pip \
+        install --reinstall -y git iptables gawk knot-resolver sipcalc python3 python3-pip \
                               wireguard-tools diffutils socat lua-cqueues ipset at file \
                               libcap2-bin logrotate gettext-base ca-certificates
 #
@@ -626,15 +626,6 @@ chmod 600 /opt/rzans_vpn_main/settings.yaml
 # каталоги (после того как мы всё подчистили выше)
 install -d -o knot-resolver -g knot-resolver -m 755 /etc/knot-resolver
 install -d -o knot-resolver -g knot-resolver -m 755 /var/lib/knot-resolver
-
-# Writable trust-anchors for ta_update (чистая установка)
-KRUSER="knot-resolver"
-if ! id -u "$KRUSER" >/dev/null 2>&1; then KRUSER="kresd"; fi
-if [[ -f /usr/share/dns/root.key ]] && [[ ! -s /var/lib/knot-resolver/root.keys ]]; then
-  cp -f /usr/share/dns/root.key /var/lib/knot-resolver/root.keys
-fi
-chown "$KRUSER":"$KRUSER" /var/lib/knot-resolver /var/lib/knot-resolver/root.keys 2>/dev/null || true
-chmod 0644 /var/lib/knot-resolver/root.keys 2>/dev/null || true
 
 # ── каталоги LMDB-кэша для ЧЕТЫРЁХ инстансов (@1…@4)
 # новая схема: /var/cache/knot-resolver/{1,2,3,4}

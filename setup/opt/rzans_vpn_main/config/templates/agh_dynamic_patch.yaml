@@ -6,13 +6,10 @@ dns:
 ${BIND_BLOCK}
 
   upstream_dns:
-    - ${KRESD3_IP}:${DNS_PORT}
+    - ${KRESD2_IP}:${DNS_PORT}
 
   bootstrap_dns:
-    - ${ipv4a}
-    - ${ipv4b}
-    - ${ipv6a}
-    - ${ipv6b}
+    - ${KRESD2_IP}:${DNS_PORT}
   fallback_dns:
     - ${ipv4a}
     - ${ipv4b}
