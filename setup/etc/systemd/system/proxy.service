@@ -1,0 +1,19 @@
+[Unit]
+Description=DNS proxy
+After=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+Wants=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/rzans_vpn_main
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/rzans_vpn_main/proxy.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+LimitNPROC=infinity
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

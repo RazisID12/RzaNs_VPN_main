@@ -1,0 +1,20 @@
+[Unit]
+Description=Dwnld update (full)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rzans_vpn_main
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/rzans_vpn_main/doall.sh full
+# Журнал важнее рестартов — таймер сам перезапускает по расписанию
+TimeoutSec=1h
+Nice=10
+IOSchedulingClass=best-effort
+
+# (опционально, чуть харденинга)
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes

@@ -1,0 +1,25 @@
+[Unit]
+Description=AdGuard Home
+Documentation=https://adguard.com/
+After=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+Wants=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+ConditionPathExists=/opt/AdGuardHome/AdGuardHome.yaml
+Conflicts=systemd-resolved.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/AdGuardHome
+ExecStart=/opt/AdGuardHome/AdGuardHome \
+          -c /opt/AdGuardHome/AdGuardHome.yaml \
+          -w /opt/AdGuardHome \
+          --verbose
+User=adguardhome
+Group=adguardhome
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=no
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
