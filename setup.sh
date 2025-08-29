@@ -538,7 +538,7 @@ routing:
 EOF
 
 echo -e '\nPreparing configs from installer answers…'
-/opt/rzans_vpn_main/settings/settings.sh --prepare-overlay "$OVER"
+bash /opt/rzans_vpn_main/settings/settings.sh --prepare-overlay "$OVER"
 
 # --- Права для Knot Resolver и RPZ-файлов -------------------------------
 # каталоги (после того как мы всё подчистили выше)
