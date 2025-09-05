@@ -1067,9 +1067,8 @@ yaml_allow_all() {
     ( .allowip.ipv6 | ([(. // [])] | flatten) ) as $B |
     ( $A + $B )
       | map(select(. != null and . != "auto"))
-      # Тримим лидирующие/хвостовые пробелы и табы без регэкспов —
-      # избегаем проблем парсера jq/gojq с gsub/escape
-      | map((. | ltrimstr(" ") | ltrimstr("\t") | rtrimstr(" ") | rtrimstr("\t")))
+      # Тримминг краевых пробелов/табов: совместимо с gojq (yq v4)
+      | map( sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; "") )
       | map(select(. != ""))
       | unique
       | .[]
