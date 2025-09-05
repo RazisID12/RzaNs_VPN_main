@@ -1,0 +1,20 @@
+[Unit]
+Description=One-time: switch off systemd-resolved, activate local DNS and apply settings
+After=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=network-online.target firewall.service
+
+ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --switch-system-resolve
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --apply-all
+ExecStartPost=/usr/bin/systemctl disable --now init.service
+ExecStartPost=/bin/rm -f /etc/systemd/system/init.service
+ExecStartPost=/usr/bin/systemctl daemon-reload
+
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

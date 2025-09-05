@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch settings.yaml and trigger apply.service
+
+[Path]
+PathChanged=/opt/rzans_vpn_main/settings.yaml
+PathChanged=/opt/rzans_vpn_main/settings/settings.yaml
+Unit=apply.service
+
+[Install]
+WantedBy=multi-user.target

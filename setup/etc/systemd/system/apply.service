@@ -1,0 +1,12 @@
+[Unit]
+Description=Apply settings.yaml changes (RzaNs)
+Requires=network-online.target
+After=network-online.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+
+[Service]
+Type=oneshot
+Environment=STRICT_SETTINGS=0
+Environment=VERBOSE_SETTINGS=1
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --auto-apply
+User=root
+Group=root

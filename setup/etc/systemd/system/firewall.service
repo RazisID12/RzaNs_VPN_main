@@ -1,0 +1,15 @@
+[Unit]
+Description=Firewall (skeleton + dynamic chains)
+After=network-online.target
+Before=kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/rzans_vpn_main
+ExecStart=/opt/rzans_vpn_main/firewall/up.sh
+ExecStop=/opt/rzans_vpn_main/firewall/down.sh
+
+[Install]
+WantedBy=multi-user.target
