@@ -547,6 +547,17 @@ EOF
 echo -e '\nPreparing configs from installer answers…'
 /usr/bin/env bash /opt/rzans_vpn_main/settings/settings.sh --prepare-overlay "$OVER"
 
+S=/opt/rzans_vpn_main/settings.yaml
+echo "[DEBUG] overlay written to: $S"
+echo "[DEBUG] adguard_home.enable=$(yq e -r '.adguard_home.enable' "$S")"
+echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
+echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
+echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
+
+# Жёсткая проверка ключевых ответов инсталятора:
+[[ "$(yq e -r '.adguard_home.enable' "$S")" == "true" ]] || { echo "✗ overlay lost: AGH enable"; exit 50; }
+[[ "$(yq e -r '.fail2ban.enable' "$S")" == "true" ]]    || { echo "✗ overlay lost: F2B enable"; exit 51; }
+
 # --- Права для Knot Resolver и RPZ-файлов -------------------------------
 # каталоги (после того как мы всё подчистили выше)
 install -d -o knot-resolver -g knot-resolver -m 755 /etc/knot-resolver
