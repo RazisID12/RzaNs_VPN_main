@@ -9,6 +9,7 @@ set -euo pipefail
 set -E -o errtrace
 
 # ── локальный tmp и его авточистка ────────────────────────────────────────────
+TMP_DIR=$(mktemp -d -t rzansvpn.XXXXXX)
 cleanup_tmp() {
   rm -rf "$TMP_DIR" 2>/dev/null || true
 }
@@ -31,11 +32,9 @@ fi
 
 mkdir -p /opt && cd /opt
 
-# ── запрет на контейнеры OpenVZ/LXC (если systemd-detect-virt есть)
 # Проверка на OpenVZ и LXC (если утилита есть)
-if command -v systemd-detect-virt &>/dev/null; then
-  virt_type="$(systemd-detect-virt 2>/dev/null || true)"
-  if [[ "$virt_type" == "openvz" || "$virt_type" == "lxc" ]]; then
+if command -v systemd-detect-virt &>/dev/null && \
+   [[ "$(systemd-detect-virt)" == "openvz" || "$(systemd-detect-virt)" == "lxc" ]]; then
 	echo 'Error: OpenVZ and LXC are not supported!'
 	exit 3
 fi
@@ -250,13 +249,13 @@ curl --proto '=https' --tlsv1.2 --retry 3 -fsSL https://pkg.labs.nic.cz/gpg \
      | gpg --dearmor > /etc/apt/keyrings/cznic-labs-pkg.gpg
 
 # 2. дополнительный signing-key 0xD959241751179EC7 из публичного keyserver’а
-GPG_TMP_DIR="$(mktemp -d)"
+tmp_dir=$(mktemp -d)
 if curl --retry 3 -fsSL \
      "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xD959241751179EC7" \
-     | gpg --dearmor >"$GPG_TMP_DIR/D959241751179EC7.gpg"; then
-  cat "$GPG_TMP_DIR/D959241751179EC7.gpg" >> /etc/apt/keyrings/cznic-labs-pkg.gpg
+     | gpg --dearmor >"$tmp_dir/D959241751179EC7.gpg"; then
+  cat "$tmp_dir/D959241751179EC7.gpg" >> /etc/apt/keyrings/cznic-labs-pkg.gpg
 fi
-rm -rf "$GPG_TMP_DIR"
+rm -rf "$tmp_dir"
 chmod 644 /etc/apt/keyrings/cznic-labs-pkg.gpg
 
 echo "deb [signed-by=/etc/apt/keyrings/cznic-labs-pkg.gpg] https://pkg.labs.nic.cz/knot-resolver ${CODENAME} main" \
@@ -272,8 +271,7 @@ apt-get update
 # Ставим необходимые пакеты
 apt-get -o Dpkg::Options::=--force-confdef \
         -o Dpkg::Options::=--force-confold \
-        install --reinstall -y --no-install-recommends \
-                              git iptables gawk knot-resolver sipcalc python3 python3-pip \
+        install --reinstall -y git iptables gawk knot-resolver sipcalc python3 python3-pip \
                               wireguard-tools diffutils socat lua-cqueues ipset at file \
                               libcap2-bin logrotate gettext-base ca-certificates \
                               acl attr uuid-runtime binutils
@@ -299,14 +297,8 @@ if ! command -v yq >/dev/null 2>&1 \
     i386|i686)      yq_arch=386   ;;
     *)              yq_arch=amd64 ;;
   esac
-  # допускаем пин версий: YQ_VERSION=v4.44.1; по умолчанию — latest
-  YQ_VERSION="${YQ_VERSION:-latest}"
-  if [[ "$YQ_VERSION" == "latest" ]]; then
-    yq_url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}"
-  else
-    yq_url="https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${yq_arch}"
-  fi
-  if curl --retry 3 -fsSL -L "$yq_url" \
+  if curl --retry 3 -fsSL -L \
+       "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}" \
        -o /usr/bin/yq; then
     chmod 0755 /usr/bin/yq
     # гарантируем, что в PATH будет только новый v4
@@ -335,8 +327,8 @@ if ! command -v yq >/dev/null 2>&1 \
 fi
 
 # ==== единственное клонирование репозитория =====
-readonly REPO_TMP="$TMP_DIR/rzans_vpn_main"
-git clone --depth=1 --filter=blob:none https://github.com/RazisID12/RzaNs_VPN_main.git "$REPO_TMP"
+REPO_TMP="$TMP_DIR/rzans_vpn_main"
+git clone https://github.com/RazisID12/RzaNs_VPN_main.git "$REPO_TMP"
 
 # инициализируем накопитель ошибок СРАЗУ,
 ERRORS=""
@@ -448,11 +440,13 @@ fi
 apt-get autoremove -y
 apt-get clean
 
-# dnslib из PyPI (без локального клона)
-# Флаг --break-system-packages добавляем только если поддерживается
+# Клонируем репозиторий и устанавливаем dnslib
+DNSLIB_DIR="$TMP_DIR/dnslib"
+git clone https://github.com/paulc/dnslib.git "$DNSLIB_DIR"
+# Ставим системно; флаг --break-system-packages добавляем только если поддерживается
 PIP_BSP=""
 python3 -m pip help install 2>/dev/null | grep -q -- '--break-system-packages' && PIP_BSP="--break-system-packages"
-python3 -m pip install --no-cache-dir --force-reinstall --no-deps $PIP_BSP "dnslib>=0.9.24"
+python3 -m pip install --force-reinstall --no-deps $PIP_BSP "$DNSLIB_DIR"
 
 # ────────────────────────────────────────────────────────────────────────────
 # Persist user config + settings.yaml и серверные WG-конфиги (clean install)

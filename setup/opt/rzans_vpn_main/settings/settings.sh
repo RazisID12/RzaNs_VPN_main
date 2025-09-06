@@ -3,7 +3,6 @@
 # Включаем строгий режим ТОЛЬКО при прямом запуске (а не при source).
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -euo pipefail
-  set -E -o errtrace
 fi
 IFS=$'\n\t'
 umask 022
@@ -24,7 +23,7 @@ export LC_ALL=C
 #    указывая явный путь /usr/bin/yq (его ставит setup.sh).
 #  • Если вдруг нет v4 — прекращаем работу сразу.
 # ---------------------------------------------------------------------------
-readonly YQ_BIN=/usr/bin/yq
+YQ_BIN=/usr/bin/yq
 hash -r                                 # сбрасываем возможный кеш Bash
 if ! "$YQ_BIN" --version 2>/dev/null | grep -Eq '\bv?4(\.|$)'; then
   echo "ERROR: need go-yq v4+, but $YQ_BIN is missing or outdated" >&2
@@ -275,7 +274,7 @@ _ipset_comment_flag() {
        && ipset -! create __cmt_probe6 hash:ip  family inet6 comment >/dev/null 2>&1
     then
       _IPSET_CMT_FLAG_CACHED="comment"
-      ipset destroy __cmt_probe >/dev/null 2>&1 || true; ipset destroy __cmt_probe6 >/dev/null 2>&1 || true
+      ipset destroy __cmt_probe __cmt_probe6 >/dev/null 2>&1 || true
     fi
   fi
   printf '%s' "$_IPSET_CMT_FLAG_CACHED"
@@ -1055,8 +1054,8 @@ yaml_bool() {
   case "${raw,,}" in
     true|yes|y|1|on|enable|enabled)        echo y ;;
     false|no|n|0|off|disable|disabled)     echo n ;;
-    "__absent__")                          echo "$def" ;;
-    *)                                     echo "$def" ;;
+    "__absent__")  echo "$def" ;;
+    *)             echo "$def" ;;
   esac
 }
 
@@ -2610,7 +2609,7 @@ case "${1:-}" in
   --apply)            shift; apply_all                               "$@"; exit $? ;;
   --apply-all)        shift; apply_all                               "$@"; exit $? ;;
   --apply-keys)       shift; apply_keys                              "$@"; exit $? ;;
-  --sync-fw-ssh)      _require_root; shift; "${FIREWALL_DIR}/up.sh" --fw-ssh;       exit $? ;;
+  --sync-fw-ssh)       _require_root; shift; "${FIREWALL_DIR}/up.sh" --fw-ssh;       exit $? ;;
   --sync-fw-vpn-ports) _require_root; shift; "${FIREWALL_DIR}/up.sh" --fw-vpn-ports; exit $? ;;
   --sync-fw-dot)       _require_root; shift; "${FIREWALL_DIR}/up.sh" --fw-dot-port;  exit $? ;;
   --sync-fw)           _require_root; shift; _with_lock sync_fw_all                  "$@"; exit $? ;;
