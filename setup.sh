@@ -8,6 +8,28 @@ export LC_ALL=C
 set -euo pipefail
 set -E -o errtrace
 
+# ── helper: строгое y/n ─────────────────────────────────────────────────────
+# ask_yn "Prompt (без [y/n])" [default:y|n]  → печатает 'y' или 'n'
+ask_yn() {
+  local prompt="$1"
+  local def="${2:-y}"
+  [[ "$def" != "y" && "$def" != "n" ]] && def="y"
+  local ans=""
+  while true; do
+    # Readline + дефолт; приводим к нижнему регистру, чистим \r и пробелы
+    read -rp "${prompt} [y/n]: " -e -i "$def" ans
+    # нижний регистр
+    ans="${ans,,}"
+    # убираем CR, потом тримим пробелы по краям
+    ans="${ans//$'\r'/}"
+    ans="$(sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$ans")"
+    case "$ans" in
+      y|n) printf '%s' "$ans"; return 0 ;;
+      *) : ;;  # повтор вопроса
+    esac
+  done
+}
+
 # ── локальный tmp и его авточистка ────────────────────────────────────────────
 TMP_DIR="$(mktemp -d -t rzansvpn.XXXXXXXX)"
 export TMP_DIR
@@ -96,14 +118,10 @@ until [[ "$UPSTREAM_DNS" =~ ^[1-3]$ ]]; do
 done
 
 # ── AdGuard Home сразу как единственный фильтр ────────────────────────
-until [[ "$ADGUARD_HOME" =~ (y|n) ]]; do
-  read -rp $'Install and use \001\e[1;36m\002AdGuard Home\001\e[0m\002 for DNS filtering? [y/n]: ' -e -i y ADGUARD_HOME
-done
+ADGUARD_HOME="$(ask_yn $'Install and use \001\e[1;36m\002AdGuard Home\001\e[0m\002 for DNS filtering?' y)"
 
 echo
-until [[ "$SSH_PROTECTION" =~ (y|n) ]]; do
-  read -rp $'Enable \001\e[1;36m\002SSH protection\001\e[0m\002? [y/n]: ' -e -i y SSH_PROTECTION
-done
+SSH_PROTECTION="$(ask_yn $'Enable \001\e[1;36m\002SSH protection\001\e[0m\002?' y)"
 
 echo
 while true; do
@@ -114,45 +132,25 @@ while true; do
 done
 unset _ip_test
 echo
-until [[ "$ROUTE_ALL" =~ (y|n) ]]; do
-  read -rp $'Enable \001\e[1;36m\002route all\001\e[0m\002 traffic via Split VPN, excluding Russian domains and domains from exclude-hosts.txt? [y/n]: ' -e -i n ROUTE_ALL
-done
+ROUTE_ALL="$(ask_yn $'Enable \001\e[1;36m\002route all\001\e[0m\002 traffic via Split VPN, excluding Russian domains and domains from exclude-hosts.txt?' n)"
 echo
-until [[ "$DISCORD_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Discord\001\e[0m\002 voice IPs in Split VPN? [y/n]: ' -e -i y DISCORD_INCLUDE
-done
+DISCORD_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Discord\001\e[0m\002 voice IPs in Split VPN?' y)"
 echo
-until [[ "$CLOUDFLARE_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Cloudflare\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i y CLOUDFLARE_INCLUDE
-done
+CLOUDFLARE_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Cloudflare\001\e[0m\002 IPs in Split VPN?' y)"
 echo
-until [[ "$AMAZON_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Amazon\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n AMAZON_INCLUDE
-done
+AMAZON_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Amazon\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$HETZNER_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Hetzner\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n HETZNER_INCLUDE
-done
+HETZNER_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Hetzner\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$DIGITALOCEAN_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002DigitalOcean\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n DIGITALOCEAN_INCLUDE
-done
+DIGITALOCEAN_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002DigitalOcean\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$OVH_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002OVH\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n OVH_INCLUDE
-done
+OVH_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002OVH\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$TELEGRAM_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Telegram\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n TELEGRAM_INCLUDE
-done
+TELEGRAM_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Telegram\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$GOOGLE_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Google\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n GOOGLE_INCLUDE
-done
+GOOGLE_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Google\001\e[0m\002 IPs in Split VPN?' n)"
 echo
-until [[ "$AKAMAI_INCLUDE" =~ (y|n) ]]; do
-  read -rp $'Include \001\e[1;36m\002Akamai\001\e[0m\002 IPs in Split VPN? [y/n]: ' -e -i n AKAMAI_INCLUDE
-done
+AKAMAI_INCLUDE="$(ask_yn $'Include \001\e[1;36m\002Akamai\001\e[0m\002 IPs in Split VPN?' n)"
 echo
 echo 'Preparing for installation, please wait...'
 set -u   # ◄ возвращаем строгий режим после всех read/until
