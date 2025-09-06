@@ -552,9 +552,23 @@ echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
 echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
 echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
 
-# Жёсткая проверка ключевых ответов инсталятора:
-[[ "$(yq e -r '.adguard_home.enable' "$S")" == "true" ]] || { echo "✗ overlay lost: AGH enable"; exit 50; }
-[[ "$(yq e -r '.fail2ban.enable' "$S")" == "true" ]]    || { echo "✗ overlay lost: F2B enable"; exit 51; }
+# Универсальная проверка: всё, что положили в $OVER, обязано
+# один-в-один оказаться в /opt/rzans_vpn_main/settings.yaml.
+# Сравниваем только скаляры (строки/числа/bool), игнорируя структуры.
+echo "[DEBUG] verifying overlay → settings.yaml…"
+MISM="$(yq ea -o=json -I=0 '
+  # fi==0 → overlay, fi==1 → settings.yaml
+  select(fi==0) as $OV | select(fi==1) as $SET |
+  paths(scalars) as $p |
+  { key: ($p|join(".")), exp: ($OV|getpath($p)), got: ($SET|getpath($p)//"__absent__") } |
+  select(.got != .exp)
+' "$OVER" "$S")"
+if [[ -n "$MISM" ]]; then
+  echo "✗ overlay mismatch(es) detected:"
+  # Красиво распечатаем список несовпадений (если yq можно задействовать повторно)
+  printf '%s\n' "$MISM" | yq e -P - 2>/dev/null || printf '%s\n' "$MISM"
+  exit 50
+fi
 
 # --- Права для Knot Resolver и RPZ-файлов -------------------------------
 # каталоги (после того как мы всё подчистили выше)
