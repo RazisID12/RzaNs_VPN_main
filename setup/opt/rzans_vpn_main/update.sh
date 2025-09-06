@@ -87,7 +87,15 @@ AKAMAI_IPS_PATH="${DOWNLOAD_DIR}/akamai-ips.txt"
 
 # ── скачивалка ──────────────────────────────────────────────────────────────
 download() {
-  local path="$1" url="$2" tmp="${path}.tmp"
+  # Раздельные присваивания, чтобы не словить set -u на ${path} до инициализации
+  local path url tmp
+  path="${1:?download(): missing <path>}"
+  url="${2:-}"
+  if [[ -z "$url" ]]; then
+    echo "download(): missing <url> for path '$path'" >&2
+    return 2
+  fi
+  tmp="${path}.tmp"
   install -d -m 755 "$(dirname "$path")"
   echo "[DL] $url"
   curl "${CURL_OPTS[@]}" -o "$tmp" "$url"
