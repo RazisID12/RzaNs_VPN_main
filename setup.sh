@@ -541,8 +541,8 @@ S=/opt/rzans_vpn_main/settings.yaml
 echo "[DEBUG] settings.yaml: $S"
 echo "[DEBUG] adguard_home.enable=$(yq e -r '.adguard_home.enable' "$S")"
 echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
-echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
-echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all // \"__absent__\"' "$S")"
+echo "[DEBUG] dns.upstream=$(yq e -r ".dns.upstream" "$S")"
+echo "[DEBUG] routing.route_all=$(yq e -r ".routing.route_all // \"__absent__\"" "$S")"
 
 # Верификация: проверяем, что «ответы мастера» реально легли в settings.yaml
 echo "[DEBUG] verifying installer answers landed…"
