@@ -2419,25 +2419,17 @@ prepare_overlay() {
 
   local TMP; TMP="$(mktemp)"
   if [[ -s "$SETTINGS_YAML" ]]; then
-    # settings.yaml существует → накладываем ответы мастера поверх него
-    if ! yq ea -P '. as $item ireduce ({}; . * $item)' \
-         "$SETTINGS_YAML" "$OVER" >"$TMP"; then
-      rm -f "$TMP"
-      echo "ERROR: overlay merge failed" >&2
-      return 1
+    # ВСЕГДА: defaults * current * overlay  → overlay побеждает
+    if ! yq ea -P 'select(fi==0) * select(fi==1) * select(fi==2)' \
+         "$DEFAULTS_YAML" "$SETTINGS_YAML" "$OVER" >"$TMP"; then
+      rm -f "$TMP"; echo "ERROR: overlay merge failed" >&2; return 1
     fi
   else
-    # settings.yaml отсутствует → формируем валидный старт: defaults * overlay
-    [[ -s "$DEFAULTS_YAML" ]] || {
-      echo "ERROR: defaults not found: $DEFAULTS_YAML" >&2
-      rm -f "$TMP"
-      return 1
-    }
-    if ! yq ea -P '. as $item ireduce ({}; . * $item)' \
+    # Первый старт: defaults * overlay
+    [[ -s "$DEFAULTS_YAML" ]] || { echo "ERROR: defaults not found: $DEFAULTS_YAML" >&2; rm -f "$TMP"; return 1; }
+    if ! yq ea -P 'select(fi==0) * select(fi==1)' \
          "$DEFAULTS_YAML" "$OVER" >"$TMP"; then
-      rm -f "$TMP"
-      echo "ERROR: initial merge failed" >&2
-      return 1
+      rm -f "$TMP"; echo "ERROR: initial merge failed" >&2; return 1
     fi
   fi
 
