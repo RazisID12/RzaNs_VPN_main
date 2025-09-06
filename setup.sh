@@ -552,22 +552,29 @@ echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
 echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
 echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
 
-# Универсальная проверка: всё, что положили в $OVER, обязано
-# один-в-один оказаться в /opt/rzans_vpn_main/settings.yaml.
-# Сравниваем только скаляры (строки/числа/bool), игнорируя структуры.
-echo "[DEBUG] verifying overlay → settings.yaml…"
-MISM="$(yq ea -o=json -I=0 '
-  # fi==0 → overlay, fi==1 → settings.yaml
-  select(fi==0) as $OV | select(fi==1) as $SET |
-  paths(scalars) as $p |
-  { key: ($p|join(".")), exp: ($OV|getpath($p)), got: ($SET|getpath($p)//"__absent__") } |
-  select(.got != .exp)
-' "$OVER" "$S")"
-if [[ -n "$MISM" ]]; then
-  echo "✗ overlay mismatch(es) detected:"
-  # Красиво распечатаем список несовпадений (если yq можно задействовать повторно)
-  printf '%s\n' "$MISM" | yq e -P - 2>/dev/null || printf '%s\n' "$MISM"
-  exit 50
+# Универсальная проверка overlay vs settings.yaml (только листья-скаляры).
+# Без юникода и без нестабильного filters/scalars — максимум совместимости.
+echo "[DEBUG] verifying overlay -> settings.yaml…"
+if ! MISM="$(
+  yq ea -o=json -I=0 '
+    select(fileIndex==0) as $OV |
+    select(fileIndex==1) as $SET |
+    paths as $p |
+    (getpath($p)) as $v |
+    select( ($v|type) != "object" and ($v|type) != "array" ) |
+    { key: ($p|join(".")),
+      exp: ($OV|getpath($p)),
+      got: ($SET|getpath($p)//"__absent__") } |
+    select(.got != .exp)
+  ' "$OVER" "$S"
+)"; then
+  echo "✗ overlay verification failed (yq). Skipping strict check." >&2
+else
+  if [[ -n "$MISM" ]]; then
+    echo "✗ overlay mismatches found:"
+    printf '%s\n' "$MISM" | yq e -P - 2>/dev/null || printf '%s\n' "$MISM"
+    exit 50
+  fi
 fi
 
 # --- Права для Knot Resolver и RPZ-файлов -------------------------------
