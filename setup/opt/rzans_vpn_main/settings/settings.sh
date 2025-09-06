@@ -894,12 +894,7 @@ settings_heal() {
   # 1) Собираем документ M: defaults + значения settings (как есть)
   #    и подстилаем обязательные ключи, если пусто/null/[].
   TMP="$(mktemp)"
-  if ! yq ea -P '
-    # files: 0 -> defaults ($D), 1 -> existing settings ($S)
-    select(fi==0) as $D |
-    select(fi==1) as $S |
-    ($D * $S)
-  ' "$D" "$S" >"$TMP"; then
+  if ! yq ea -P '. as $item ireduce ({}; . * $item)' "$D" "$S" >"$TMP"; then
     rm -f "$TMP"
     echo "ERROR: settings_heal: YAML merge failed" >&2
     return 1
@@ -1989,10 +1984,10 @@ agh_heal() {
   # 3. Сначала готовим MERGE (без комментариев): base * patch * existing?
   local MERGE_TMP; MERGE_TMP="$(mktemp)"
   if [[ -s $AGH_YAML ]]; then
-    yq ea -P 'select(fi==0) * select(fi==1) * select(fi==2)' \
+    yq ea -P '. as $item ireduce ({}; . * $item)' \
       "$AGH_TMPL_BASE" "$PTMP" "$AGH_YAML" >"$MERGE_TMP"
   else
-    yq ea -P 'select(fi==0) * select(fi==1)' \
+    yq ea -P '. as $item ireduce ({}; . * $item)' \
       "$AGH_TMPL_BASE" "$PTMP" >"$MERGE_TMP"
   fi
   rm -f "$PTMP"
@@ -2425,7 +2420,7 @@ prepare_overlay() {
   local TMP; TMP="$(mktemp)"
   if [[ -s "$SETTINGS_YAML" ]]; then
     # settings.yaml существует → накладываем ответы мастера поверх него
-    if ! yq ea -P 'select(fi==0) * select(fi==1)' \
+    if ! yq ea -P '. as $item ireduce ({}; . * $item)' \
          "$SETTINGS_YAML" "$OVER" >"$TMP"; then
       rm -f "$TMP"
       echo "ERROR: overlay merge failed" >&2
@@ -2438,7 +2433,7 @@ prepare_overlay() {
       rm -f "$TMP"
       return 1
     }
-    if ! yq ea -P 'select(fi==0) * select(fi==1)' \
+    if ! yq ea -P '. as $item ireduce ({}; . * $item)' \
          "$DEFAULTS_YAML" "$OVER" >"$TMP"; then
       rm -f "$TMP"
       echo "ERROR: initial merge failed" >&2

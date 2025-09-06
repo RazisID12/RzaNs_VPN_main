@@ -116,13 +116,11 @@ echo '    3) Google'
 until [[ "$UPSTREAM_DNS" =~ ^[1-3]$ ]]; do
 	read -rp 'DNS choice [1-3]: ' -e -i 1 UPSTREAM_DNS
 done
-
 # ── AdGuard Home сразу как единственный фильтр ────────────────────────
+echo
 ADGUARD_HOME="$(ask_yn $'Install and use \001\e[1;36m\002AdGuard Home\001\e[0m\002 for DNS filtering?' y)"
-
 echo
 SSH_PROTECTION="$(ask_yn $'Enable \001\e[1;36m\002SSH protection\001\e[0m\002?' y)"
-
 echo
 while true; do
   read -rp $'Enter valid \001\e[1;36m\002domain name\001\e[0m\002 for this server or press Enter to skip: ' -e SERVER_HOST
@@ -553,28 +551,23 @@ echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
 echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
 
 # Универсальная проверка overlay vs settings.yaml (только листья-скаляры).
-# Без юникода и без нестабильного filters/scalars — максимум совместимости.
 echo "[DEBUG] verifying overlay -> settings.yaml…"
-if ! MISM="$(
-  yq ea -o=json -I=0 '
-    select(fileIndex==0) as $OV |
-    select(fileIndex==1) as $SET |
-    paths as $p |
-    (getpath($p)) as $v |
-    select( ($v|type) != "object" and ($v|type) != "array" ) |
-    { key: ($p|join(".")),
-      exp: ($OV|getpath($p)),
-      got: ($SET|getpath($p)//"__absent__") } |
-    select(.got != .exp)
-  ' "$OVER" "$S"
-)"; then
-  echo "✗ overlay verification failed (yq). Skipping strict check." >&2
-else
-  if [[ -n "$MISM" ]]; then
-    echo "✗ overlay mismatches found:"
-    printf '%s\n' "$MISM" | yq e -P - 2>/dev/null || printf '%s\n' "$MISM"
-    exit 50
+mismatch=0
+chk() { local key="$1"; local exp="$2"; local got;
+  got="$(yq e -r ".$key // \"__absent__\"" "$S" 2>/dev/null || echo "__absent__")"
+  if [[ "$got" != "$exp" ]]; then
+    echo "✗ mismatch: $key  expected=$exp  got=$got"
+    mismatch=1
   fi
+}
+# Сверяем только ключи, которые мы точно пишем из инсталлятора
+chk "adguard_home.enable" "$(yq e -r '.adguard_home.enable' "$OVER")"
+chk "fail2ban.enable"     "$(yq e -r '.fail2ban.enable' "$OVER")"
+chk "dns.upstream"        "$(yq e -r '.dns.upstream' "$OVER")"
+chk "routing.route_all"   "$(yq e -r '.routing.route_all' "$OVER")"
+if (( mismatch )); then
+  echo "✗ overlay values did not land into settings.yaml"
+  exit 50
 fi
 
 # --- Права для Knot Resolver и RPZ-файлов -------------------------------
