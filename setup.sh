@@ -517,29 +517,32 @@ case "$UPSTREAM_DNS" in
   3) DNS_UPSTREAM=google     ;;
 esac
 
+# Пишем ответы мастера через API settings.sh (атомарно, с локом, корректные типы)
+# shellcheck source=/opt/rzans_vpn_main/settings/settings.sh
+source /opt/rzans_vpn_main/settings/settings.sh
+
+yaml_set 'dns.upstream'                "\"$DNS_UPSTREAM\""
+yaml_set 'adguard_home.enable'         "$( [[ $ADGUARD_HOME   == y ]] && echo true || echo false )"
+yaml_set 'fail2ban.enable'             "$( [[ $SSH_PROTECTION == y ]] && echo true || echo false )"
+yaml_set 'server.domain'               "\"${SERVER_HOST:-auto}\""
+yaml_set 'routing.route_all'           "$( [[ $ROUTE_ALL == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.discord'       "$( [[ $DISCORD_INCLUDE      == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.cloudflare'    "$( [[ $CLOUDFLARE_INCLUDE   == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.amazon'        "$( [[ $AMAZON_INCLUDE       == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.hetzner'       "$( [[ $HETZNER_INCLUDE      == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.digitalocean'  "$( [[ $DIGITALOCEAN_INCLUDE == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.ovh'           "$( [[ $OVH_INCLUDE          == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.telegram'      "$( [[ $TELEGRAM_INCLUDE     == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.google'        "$( [[ $GOOGLE_INCLUDE       == y ]] && echo true || echo false )"
+yaml_set 'routing.flags.akamai'        "$( [[ $AKAMAI_INCLUDE       == y ]] && echo true || echo false )"
+
+# Отладка (оставляем как было)
 S=/opt/rzans_vpn_main/settings.yaml
-
-# Пишем ответы мастера напрямую в settings.yaml
-yq -i ".dns.upstream = \"${DNS_UPSTREAM}\"" "$S"
-yq -i ".adguard_home.enable = $( [[ $ADGUARD_HOME   == y ]] && echo true || echo false )" "$S"
-yq -i ".fail2ban.enable     = $( [[ $SSH_PROTECTION == y ]] && echo true || echo false )" "$S"
-yq -i ".server.domain       = \"${SERVER_HOST:-auto}\"" "$S"
-yq -i ".routing.route_all   = $( [[ $ROUTE_ALL == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.discord      = $( [[ $DISCORD_INCLUDE      == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.cloudflare   = $( [[ $CLOUDFLARE_INCLUDE   == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.amazon       = $( [[ $AMAZON_INCLUDE       == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.hetzner      = $( [[ $HETZNER_INCLUDE      == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.digitalocean = $( [[ $DIGITALOCEAN_INCLUDE == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.ovh          = $( [[ $OVH_INCLUDE          == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.telegram     = $( [[ $TELEGRAM_INCLUDE     == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.google       = $( [[ $GOOGLE_INCLUDE       == y ]] && echo true || echo false )" "$S"
-yq -i ".routing.flags.akamai       = $( [[ $AKAMAI_INCLUDE       == y ]] && echo true || echo false )" "$S"
-
 echo "[DEBUG] settings.yaml: $S"
 echo "[DEBUG] adguard_home.enable=$(yq e -r '.adguard_home.enable' "$S")"
 echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
 echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
-echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
+echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all // \"__absent__\"' "$S")"
 
 # Верификация: проверяем, что «ответы мастера» реально легли в settings.yaml
 echo "[DEBUG] verifying installer answers landed…"
