@@ -2400,46 +2400,6 @@ prepare_main() {
   # apply_all сам вызывает apply_keys → run_needs, так что здесь не нужно
 }
 
-# Подготовка с overlay: если settings.yaml есть — overlay поверх него,
-# иначе создаём стартовый settings как defaults * overlay; затем один prepare_main.
-prepare_overlay() {
-  _require_root
-  local OVER="${1:-}"
-  if [[ -z "$OVER" || ! -s "$OVER" ]]; then
-    echo "Usage: $0 --prepare-overlay <overlay.yaml>" >&2
-    return 2
-  fi
-
-  # Каталоги не создаём: всё должно быть из репозитория
-  local _sdir; _sdir="$(dirname -- "$SETTINGS_YAML")"
-  [[ -d "$_sdir" && -w "$_sdir" ]] || {
-    echo "ERROR: settings dir missing or not writable: $_sdir" >&2
-    return 1
-  }
-
-  local TMP; TMP="$(mktemp)"
-  if [[ -s "$SETTINGS_YAML" ]]; then
-    # ВСЕГДА: defaults * current * overlay  → overlay побеждает
-    if ! yq ea -P 'select(fi==0) * select(fi==1) * select(fi==2)' \
-         "$DEFAULTS_YAML" "$SETTINGS_YAML" "$OVER" >"$TMP"; then
-      rm -f "$TMP"; echo "ERROR: overlay merge failed" >&2; return 1
-    fi
-  else
-    # Первый старт: defaults * overlay
-    [[ -s "$DEFAULTS_YAML" ]] || { echo "ERROR: defaults not found: $DEFAULTS_YAML" >&2; rm -f "$TMP"; return 1; }
-    if ! yq ea -P 'select(fi==0) * select(fi==1)' \
-         "$DEFAULTS_YAML" "$OVER" >"$TMP"; then
-      rm -f "$TMP"; echo "ERROR: initial merge failed" >&2; return 1
-    fi
-  fi
-
-  _write_if_changed "$SETTINGS_YAML" "$TMP" yaml || true
-  settings_fix_perms || true
-
-  # Один-единственный полноценный проход подготовки
-  prepare_main
-}
-
 # Обёртка: взять lock, выполнить функцию, всегда отпустить lock (даже при ошибке)
 _with_lock() {
   local had=0 rc=0
@@ -2593,7 +2553,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 case "${1:-}" in
   --print-env-proxy) shift; print_env_proxy; exit $? ;;
   --prepare)          shift; prepare_main                            "$@"; exit $? ;;
-  --prepare-overlay)  shift; prepare_overlay                         "$@"; exit $? ;;
   --apply)            shift; apply_all                               "$@"; exit $? ;;
   --apply-all)        shift; apply_all                               "$@"; exit $? ;;
   --apply-keys)       shift; apply_keys                              "$@"; exit $? ;;

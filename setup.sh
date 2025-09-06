@@ -507,7 +507,9 @@ cp -a "$REPO_TMP"/setup/* /
 systemctl daemon-reload
 chmod +x /opt/rzans_vpn_main/settings/settings.sh 2>/dev/null || true
 
-# --- Итоговые ответы мастера → overlay + prepare ----------------------------
+# --- Итог: сначала гарантируем settings.yaml, потом пишем ответы мастера -----
+/usr/bin/env bash /opt/rzans_vpn_main/settings/settings.sh --prepare
+
 # Выбор DNS → имя провайдера
 case "$UPSTREAM_DNS" in
   1) DNS_UPSTREAM=cloudflare ;;
@@ -515,58 +517,45 @@ case "$UPSTREAM_DNS" in
   3) DNS_UPSTREAM=google     ;;
 esac
 
-# Сформировать overlay из ответов мастера
-OVER="${TMP_DIR}/installer.overlay.yaml"
-cat >"$OVER" <<EOF
-dns:
-  upstream: ${DNS_UPSTREAM}
-adguard_home:
-  enable: $( [[ $ADGUARD_HOME   == y ]] && echo true || echo false )
-fail2ban:
-  enable: $( [[ $SSH_PROTECTION == y ]] && echo true || echo false )
-server:
-  domain: ${SERVER_HOST:-auto}
-routing:
-  route_all: $( [[ $ROUTE_ALL == y ]] && echo true || echo false )
-  flags:
-    discord:      $( [[ $DISCORD_INCLUDE      == y ]] && echo true || echo false )
-    cloudflare:   $( [[ $CLOUDFLARE_INCLUDE   == y ]] && echo true || echo false )
-    amazon:       $( [[ $AMAZON_INCLUDE       == y ]] && echo true || echo false )
-    hetzner:      $( [[ $HETZNER_INCLUDE      == y ]] && echo true || echo false )
-    digitalocean: $( [[ $DIGITALOCEAN_INCLUDE == y ]] && echo true || echo false )
-    ovh:          $( [[ $OVH_INCLUDE          == y ]] && echo true || echo false )
-    telegram:     $( [[ $TELEGRAM_INCLUDE     == y ]] && echo true || echo false )
-    google:       $( [[ $GOOGLE_INCLUDE       == y ]] && echo true || echo false )
-    akamai:       $( [[ $AKAMAI_INCLUDE       == y ]] && echo true || echo false )
-EOF
-
-echo -e '\nPreparing configs from installer answers…'
-/usr/bin/env bash /opt/rzans_vpn_main/settings/settings.sh --prepare-overlay "$OVER"
-
 S=/opt/rzans_vpn_main/settings.yaml
-echo "[DEBUG] overlay written to: $S"
+
+# Пишем ответы мастера напрямую в settings.yaml
+yq -i ".dns.upstream = \"${DNS_UPSTREAM}\"" "$S"
+yq -i ".adguard_home.enable = $( [[ $ADGUARD_HOME   == y ]] && echo true || echo false )" "$S"
+yq -i ".fail2ban.enable     = $( [[ $SSH_PROTECTION == y ]] && echo true || echo false )" "$S"
+yq -i ".server.domain       = \"${SERVER_HOST:-auto}\"" "$S"
+yq -i ".routing.route_all   = $( [[ $ROUTE_ALL == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.discord      = $( [[ $DISCORD_INCLUDE      == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.cloudflare   = $( [[ $CLOUDFLARE_INCLUDE   == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.amazon       = $( [[ $AMAZON_INCLUDE       == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.hetzner      = $( [[ $HETZNER_INCLUDE      == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.digitalocean = $( [[ $DIGITALOCEAN_INCLUDE == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.ovh          = $( [[ $OVH_INCLUDE          == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.telegram     = $( [[ $TELEGRAM_INCLUDE     == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.google       = $( [[ $GOOGLE_INCLUDE       == y ]] && echo true || echo false )" "$S"
+yq -i ".routing.flags.akamai       = $( [[ $AKAMAI_INCLUDE       == y ]] && echo true || echo false )" "$S"
+
+echo "[DEBUG] settings.yaml: $S"
 echo "[DEBUG] adguard_home.enable=$(yq e -r '.adguard_home.enable' "$S")"
 echo "[DEBUG] fail2ban.enable=$(yq e -r '.fail2ban.enable' "$S")"
 echo "[DEBUG] dns.upstream=$(yq e -r '.dns.upstream' "$S")"
 echo "[DEBUG] routing.route_all=$(yq e -r '.routing.route_all' "$S")"
 
-# Универсальная проверка overlay vs settings.yaml (только листья-скаляры).
-echo "[DEBUG] verifying overlay -> settings.yaml…"
+# Верификация: проверяем, что «ответы мастера» реально легли в settings.yaml
+echo "[DEBUG] verifying installer answers landed…"
 mismatch=0
 chk() { local key="$1"; local exp="$2"; local got;
   got="$(yq e -r ".$key // \"__absent__\"" "$S" 2>/dev/null || echo "__absent__")"
   if [[ "$got" != "$exp" ]]; then
-    echo "✗ mismatch: $key  expected=$exp  got=$got"
-    mismatch=1
+    echo "✗ mismatch: $key  expected=$exp  got=$got"; mismatch=1
   fi
 }
-# Сверяем только ключи, которые мы точно пишем из инсталлятора
-chk "adguard_home.enable" "$(yq e -r '.adguard_home.enable' "$OVER")"
-chk "fail2ban.enable"     "$(yq e -r '.fail2ban.enable' "$OVER")"
-chk "dns.upstream"        "$(yq e -r '.dns.upstream' "$OVER")"
-chk "routing.route_all"   "$(yq e -r '.routing.route_all' "$OVER")"
+chk "adguard_home.enable" "$( [[ $ADGUARD_HOME   == y ]] && echo true || echo false )"
+chk "fail2ban.enable"     "$( [[ $SSH_PROTECTION == y ]] && echo true || echo false )"
+chk "dns.upstream"        "$DNS_UPSTREAM"
+chk "routing.route_all"   "$( [[ $ROUTE_ALL == y ]] && echo true || echo false )"
 if (( mismatch )); then
-  echo "✗ overlay values did not land into settings.yaml"
+  echo "✗ installer answers did not land into settings.yaml"
   exit 50
 fi
 
