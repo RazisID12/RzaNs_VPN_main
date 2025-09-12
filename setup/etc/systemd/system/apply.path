@@ -1,0 +1,12 @@
+#/etc/systemd/system/apply.path
+[Unit]
+Description=Watch settings.yaml and trigger apply.service
+ConditionPathExists=/opt/rzans_vpn_main
+
+[Path]
+PathChanged=/opt/rzans_vpn_main/settings.yaml
+PathModified=/opt/rzans_vpn_main/settings.yaml
+Unit=apply.service
+
+[Install]
+WantedBy=multi-user.target

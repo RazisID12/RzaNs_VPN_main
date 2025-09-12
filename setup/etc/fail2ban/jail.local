@@ -1,0 +1,17 @@
+[DEFAULT]
+ignoreip  =
+bantime   = 1w
+findtime  = 3h
+maxretry  = 5
+banaction = ipset-block
+
+# «экспоненциальный» рост бана
+bantime.increment = true
+bantime.rndtime   = 30m
+bantime.maxtime   = 3mo
+banFactor         = 1
+bantime.formula   = ban.Time * (1<<(ban.Count if ban.Count<20 else 20)) * banFactor
+
+[sshd]
+enabled = true
+port = 22

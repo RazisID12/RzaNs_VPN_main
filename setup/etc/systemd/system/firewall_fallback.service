@@ -1,0 +1,22 @@
+[Unit]
+Description=Fallback rules (idempotent emergency rules when WG fails)
+DefaultDependencies=no
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/firewall/fallback.sh apply
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service @network-io
+
+[Install]
+WantedBy=multi-user.target

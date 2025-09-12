@@ -1,0 +1,13 @@
+# /etc/systemd/system/dwnld_update.timer
+[Unit]
+Description=Dwnld_update daily between 2:00 and 4:00
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=2h
+AccuracySec=1m
+Persistent=true
+Unit=dwnld_update.service
+
+[Install]
+WantedBy=timers.target

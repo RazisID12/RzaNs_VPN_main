@@ -1,0 +1,30 @@
+# /etc/systemd/system/dwnld_update.service
+[Unit]
+Description=Dwnld update (full)
+After=network-online.target firewall.service
+Wants=network-online.target firewall.service
+RequiresMountsFor=/opt/rzans_vpn_main /opt/AdGuardHome
+ConditionPathExists=/opt/rzans_vpn_main/doall.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rzans_vpn_main
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/rzans_vpn_main/doall.sh full
+# журнал важнее рестартов — таймер вызовет повторно по расписанию
+TimeoutStartSec=1h
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+Nice=10
+IOSchedulingClass=best-effort
+UMask=027
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+# ВНИМАНИЕ: для apt/dpkg /usr,/etc,/var должны быть writable → ProtectSystem отключаем
+ProtectSystem=off
+ProtectHome=no
+
+[Install]
+WantedBy=multi-user.target

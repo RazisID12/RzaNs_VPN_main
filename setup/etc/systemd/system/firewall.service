@@ -1,0 +1,23 @@
+#/etc/systemd/system/firewall.service
+[Unit]
+Description=Firewall (skeleton + dynamic chains)
+DefaultDependencies=no
+Before=network-pre.target network.target network-online.target kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+Before=AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+After=local-fs.target lo_ipv6@::2.service
+Wants=network-pre.target lo_ipv6@::2.service
+ConditionPathExists=/opt/rzans_vpn_main/firewall/up.sh
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/rzans_vpn_main
+ExecStart=/opt/rzans_vpn_main/firewall/up.sh
+ExecStop=/opt/rzans_vpn_main/firewall/down.sh
+TimeoutStartSec=60
+SyslogIdentifier=rzans-firewall
+
+[Install]
+WantedBy=network-pre.target
+RequiredBy=kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+RequiredBy=AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
