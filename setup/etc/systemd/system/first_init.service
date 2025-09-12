@@ -6,7 +6,7 @@ Before=network-pre.target network.target network-online.target firewall.service 
 Before=kresd@1.service kresd@2.service kresd@3.service kresd@4.service
 Before=proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
 After=local-fs.target
-Wants=network-pre.target
+#Wants=network-pre.target
 ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
 
 [Service]
@@ -15,7 +15,9 @@ User=root
 Group=root
 ExecStart=/opt/rzans_vpn_main/settings/settings.sh --switch-system-resolve
 ExecStart=/opt/rzans_vpn_main/settings/settings.sh --apply-all
-ExecStartPost=/usr/bin/systemctl disable --now %N
+TimeoutStartSec=120s
+# Отключаем себя после успешного запуска, не пытаясь «гасить» во время Start
+ExecStartPost=/usr/bin/systemctl disable %N
 ExecStartPost=/bin/sh -c 'rm -f /etc/systemd/system/%N; /usr/bin/systemctl daemon-reload'
 
 [Install]
