@@ -2,8 +2,8 @@
 [Unit]
 Description=Add IPv6 loopback alias %I/128
 DefaultDependencies=no
-Before=network-pre.target network.target network-online.target firewall.service
 After=local-fs.target
+Before=network-pre.target network.target network-online.target firewall.service
 Wants=network-pre.target
 ConditionKernelCommandLine=!ipv6.disable=1
 ConditionPathExists=/proc/net/if_inet6

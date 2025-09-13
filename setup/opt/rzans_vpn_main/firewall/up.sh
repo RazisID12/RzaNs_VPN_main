@@ -190,17 +190,45 @@ del_by_comment(){
 fw_apply_ssh(){
   read_settings
   create_chain4 filter RZANS_INPUT;  create_chain6 filter RZANS_INPUT6
+  # чистим наши прежние SSH-правила (только помеченные нами)
   del_by_comment RZANS_INPUT  RZANS_INPUT6 'RZANS_SSH_ALLOW(6)?|RZANS_SSH_ALLOW_ANY'
   del_by_comment RZANS_INPUT  RZANS_INPUT6 'RZANS_SSH_BOOT(4|6)?'
+
+  # оценка заполненности allow-наборов
+  local cnt4=0 cnt6=0
+  if _have ipset; then
+    if [[ "$CAP_SET4" == y ]]; then
+      cnt4="$(ipset list ipset-allow 2>/dev/null | awk '/Number of entries:/{print $4; exit}')"
+      cnt4="${cnt4:-0}"
+    fi
+    if [[ "$CAP_SET6" == y ]]; then
+      cnt6="$(ipset list ipset-allow6 2>/dev/null | awk '/Number of entries:/{print $4; exit}')"
+      cnt6="${cnt6:-0}"
+    fi
+  fi
+
+  # v4: если есть xt_set и allow непуст — строгий allow по набору;
+  #     если allow пуст — временно открыть BOOT4; если xt_set нет — ALLOW_ANY.
   if [[ "$CAP_SET4" == y ]]; then
-    ins  filter RZANS_INPUT  -p tcp --dport "$SSH_PORT" -m set --match-set ipset-allow  src -m comment --comment RZANS_SSH_ALLOW  -j ACCEPT
+    if (( cnt4 > 0 )); then
+      ins  filter RZANS_INPUT -p tcp --dport "$SSH_PORT" \
+           -m set --match-set ipset-allow src \
+           -m comment --comment RZANS_SSH_ALLOW -j ACCEPT
+    else
+      ins  filter RZANS_INPUT -p tcp --dport "$SSH_PORT" \
+           -m comment --comment RZANS_SSH_BOOT4 -j ACCEPT
+    fi
   else
     echo "⚠ ipset/xt_set недоступны — SSH по v4 временно открыт, по v6 оставлен закрытым" >&2
-    ins  filter RZANS_INPUT  -p tcp --dport "$SSH_PORT" -m comment --comment RZANS_SSH_ALLOW_ANY  -j ACCEPT
-    # v6: не добавляем allow-any, чтобы сохранить политику «закрыто без доверенных»
+    ins  filter RZANS_INPUT -p tcp --dport "$SSH_PORT" \
+         -m comment --comment RZANS_SSH_ALLOW_ANY -j ACCEPT
   fi
-  if [[ "$CAP_SET6" == y ]]; then
-    ins6 filter RZANS_INPUT6 -p tcp --dport "$SSH_PORT" -m set --match-set ipset-allow6 src -m comment --comment RZANS_SSH_ALLOW6 -j ACCEPT
+
+  # v6: только когда allow6 непуст (никаких «allow-any»)
+  if [[ "$CAP_SET6" == y && "$cnt6" -gt 0 ]]; then
+    ins6 filter RZANS_INPUT6 -p tcp --dport "$SSH_PORT" \
+         -m set --match-set ipset-allow6 src \
+         -m comment --comment RZANS_SSH_ALLOW6 -j ACCEPT
   fi
 }
 
@@ -691,16 +719,8 @@ phase_dynamic_from_settings() {
     dot_ipset_sync   || true
   fi
 
-  # Bootstrap SSH (temp allow if allow-set empty)
-  if _have ipset; then
-    local cnt4
-    cnt4=$(ipset list ipset-allow  2>/dev/null | awk '/Number of entries:/{print $4; exit}'); cnt4=${cnt4:-0}
-    if (( cnt4==0 )); then
-      add  filter RZANS_INPUT  -p tcp --dport "$SSH_PORT" -m comment --comment RZANS_SSH_BOOT4 -j ACCEPT
-    else
-      ipt  -t filter -D RZANS_INPUT  -p tcp --dport "$SSH_PORT" -m comment --comment RZANS_SSH_BOOT4 -j ACCEPT 2>/dev/null || true
-    fi
-  fi
+  # Единый апдейтер SSH-правил (по наборам или временный ALLOW_ANY)
+  fw_apply_ssh
 
   # flexible blocks (динамика)
   fw_apply_dot_port
@@ -785,16 +805,6 @@ phase_dynamic_from_settings() {
     add nat RZANS_NAT -s "$NET" -o "$INTERFACE" \
 	    -m comment --comment RZANS_MASQ -j MASQUERADE
   done < <(all_postroute)
-
-  # strict SSH allow on sets
-  if command -v ipset &>/dev/null; then
-    if [[ "$CAP_SET4" == y ]]; then
-      ins  filter RZANS_INPUT  -p tcp --dport "$SSH_PORT" -m set --match-set ipset-allow  src -m comment --comment RZANS_SSH_ALLOW  -j ACCEPT
-    fi
-    if [[ "$CAP_SET6" == y ]]; then
-      ins6 filter RZANS_INPUT6 -p tcp --dport "$SSH_PORT" -m set --match-set ipset-allow6 src -m comment --comment RZANS_SSH_ALLOW6 -j ACCEPT
-    fi
-  fi
 
   # terminal default-deny внутри наших якорных цепей
   add  filter RZANS_INPUT    -m comment --comment RZANS_DEFAULT_DROP  -j DROP

@@ -1,6 +1,8 @@
-#/etc/systemd/system/apply.path
+# /etc/systemd/system/apply.path
 [Unit]
 Description=Watch settings.yaml and trigger apply.service
+After=local-fs.target
+Wants=local-fs.target
 ConditionPathExists=/opt/rzans_vpn_main
 
 [Path]
