@@ -944,13 +944,22 @@ __is_domain() {
 __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 
 # == JSON-path utils ==
-__pjson_to_dot()   { printf '%s' "$1" | yq e -r 'from_json | map(tostring) | join(".")' -; }
+__pjson_to_dot() {
+  # Вход должен быть JSON-массивом пути. Если прилетела строка — вернуть как есть.
+  case "$1" in
+    \[*\])  printf '%s' "$1" | yq e -r 'from_json | map(tostring) | join(".")' - ;;
+    *)      printf '%s\n' "$1" ;;
+  esac
+}
 __get_json_at()    { P="$2" yq e -o=json -I=0 'getpath(env(P)|from_json)' "$1" 2>/dev/null; }
 __type_at()        { P="$2" yq e -r 'type(getpath(env(P)|from_json))'     "$1" 2>/dev/null; }
 
 # Пути только по map-ключам (форма файла, без индексов массивов)
 __map_value_paths() {
-  yq e -r 'paths | select((.[-1]|type)=="string") | map(tostring) | join(".")' "$1" \
+  yq e -r '
+    path(..) as $p
+    | select( ($p[-1] | type) == "string" )
+    | $p | map(tostring) | join(".")' "$1" \
     | LC_ALL=C sort -u
 }
 
@@ -1085,7 +1094,10 @@ __settings_need_heal() {
   [[ -n "$miss" ]] && return 0
 
   # Валидация значений для всех ключей схемы (кроме автозаполняемых)
-  mapfile -t _paths < <(yq e -o=json -I=0 'paths | select((.[-1]|type)=="string")' "$D")
+  mapfile -t _paths < <(yq e -o=json -I=0 '
+    path(..) as $p
+    | select( ($p[-1] | type) == "string" )
+    | $p' "$D")
   local P TDEF V key
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
@@ -1115,7 +1127,10 @@ settings_heal() {
   # Пересборка: копия defaults + перенос валидных значений из текущего
   local DST tmp P TDEF V key
   DST="$(mktemp)"; cp -f "$D" "$DST"
-  mapfile -t _paths < <(yq e -o=json -I=0 'paths | select((.[-1]|type)=="string")' "$D")
+  mapfile -t _paths < <(yq e -o=json -I=0 '
+    path(..) as $p
+    | select( ($p[-1] | type) == "string" )
+    | $p' "$D")
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
     TDEF="$(__type_at "$D" "$P")"
@@ -2177,7 +2192,11 @@ agh_heal() {
   local GEN_TMP; GEN_TMP="$(mktemp)"; cp -f "$AGH_TMPL_BASE" "$GEN_TMP"
   # Собираем пути-листья из MERGE_TMP
   mapfile -t _paths_merge < <(
-    yq e -o=json -I=0 'paths | select( (getpath(.)) | (type != "object") )' "$MERGE_TMP" 2>/dev/null || true
+    yq e -o=json -I=0 '
+      path(..) as $p
+      | select( (getpath($p) | type) != "object" )
+      | $p
+    ' "$MERGE_TMP" 2>/dev/null || true
   )
   if ((${#_paths_merge[@]})); then
     local PJSON VAL tmp2
