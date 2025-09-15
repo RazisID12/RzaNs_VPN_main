@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# найти реальный ipset (не этот файл)
+for p in /sbin/ipset /usr/sbin/ipset /bin/ipset /usr/bin/ipset; do
+  [[ -x "$p" && "$(readlink -f "$p")" != "/usr/local/sbin/ipset" ]] && REAL="$p" && break
+done
+[[ -n "${REAL:-}" ]] || { echo "real ipset not found" >&2; exit 127; }
+
+. /opt/rzans_vpn_main/settings/settings.sh
+
+cmd="${1:-}"; shift || true
+pass(){ "$REAL" "$cmd" "$@"; }
+is_allow(){ [[ "${1:-}" == "ipset-allow" || "${1:-}" == "ipset-allow6" ]]; }
+
+case "$cmd" in
+  add)
+    setname="${1:-}"; elem="${2:-}"; shift 2 || true
+    is_allow "$setname" || { pass "$setname" "$elem" "$@"; exit $?; }
+    # выполнить реальный add
+    "$REAL" add "$setname" "$elem" "$@" || exit $?
+    # отразить в YAML и переписать с comment "src=settings"
+    _ensure_settings_lock || true
+    if [[ "$setname" == "ipset-allow6" || "$elem" == *:* ]]; then
+      "$YQ_BIN" -i '.allowip.ipv6 |= (((. // []) + ["'"$elem"'"]) | unique)' "$SETTINGS_YAML" || true
+      "$REAL" del "$setname" "$elem" 2>/dev/null || true
+      "$REAL" add "$setname" "$elem" comment "src=settings" -exist
+    else
+      "$YQ_BIN" -i '.allowip.ipv4 |= (((. // []) + ["'"$elem"'"]) | unique)' "$SETTINGS_YAML" || true
+      "$REAL" del "$setname" "$elem" 2>/dev/null || true
+      "$REAL" add "$setname" "$elem" comment "src=settings" -exist
+    fi
+    _release_settings_lock || true
+    # синхронизировать fail2ban ignoreip и мягко перелистнуть f2b
+    _update_f2b_ignoreip || true
+    systemctl try-reload-or-restart fail2ban >/dev/null 2>&1 || true
+    ;;
+  del)
+    setname="${1:-}"; elem="${2:-}"; shift 2 || true
+    is_allow "$setname" || { pass "$setname" "$elem" "$@"; exit $?; }
+    "$REAL" del "$setname" "$elem" "$@" || exit $?
+    _ensure_settings_lock || true
+    if [[ "$setname" == "ipset-allow6" || "$elem" == *:* ]]; then
+      "$YQ_BIN" -i '.allowip.ipv6 |= (. // []) | . - ["'"$elem"'"]' "$SETTINGS_YAML" || true
+    else
+      "$YQ_BIN" -i '.allowip.ipv4 |= (. // []) | . - ["'"$elem"'"]' "$SETTINGS_YAML" || true
+    fi
+    _release_settings_lock || true
+    _update_f2b_ignoreip || true
+    systemctl try-reload-or-restart fail2ban >/dev/null 2>&1 || true
+    ;;
+  *)
+    pass "$@"
+    ;;
+esac

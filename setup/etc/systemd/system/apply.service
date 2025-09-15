@@ -1,0 +1,17 @@
+# /etc/systemd/system/apply.service
+[Unit]
+Description=Apply settings
+After=local-fs.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+RequiresMountsFor=/opt/rzans_vpn_main
+ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=STRICT_SETTINGS=0
+Environment=VERBOSE_SETTINGS=1
+ExecStart=/usr/bin/flock -n /run/rzans-apply.lock /opt/rzans_vpn_main/settings/settings.sh --auto-apply
+TimeoutStartSec=10min
+SyslogIdentifier=rzans-apply

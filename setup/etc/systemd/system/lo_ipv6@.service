@@ -1,0 +1,18 @@
+# /etc/systemd/system/lo_ipv6@.service
+[Unit]
+Description=Add IPv6 loopback alias %I/128
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target network.target network-online.target firewall.service
+Wants=network-pre.target
+ConditionKernelCommandLine=!ipv6.disable=1
+ConditionPathExists=/proc/net/if_inet6
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '[ "$(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null || echo 1)" -eq 0 ] || exit 0; /usr/sbin/ip -6 addr add %I/128 dev lo 2>/dev/null || true'
+ExecStop=/bin/sh -c '/usr/sbin/ip -6 addr del %I/128 dev lo 2>/dev/null || true'
+
+[Install]
+WantedBy=network-pre.target

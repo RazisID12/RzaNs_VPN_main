@@ -1,0 +1,23 @@
+# /etc/systemd/system/first_init.service
+[Unit]
+Description=One-time bootstrap: disable systemd-resolved, switch local DNS, apply settings
+After=network-online.target firewall.service \
+      kresd@1.service kresd@2.service kresd@3.service kresd@4.service \
+      AdGuardHome.service proxy.service \
+      wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=network-online.target firewall.service
+ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --switch-system-resolve
+ExecStart=/opt/rzans_vpn_main/settings/settings.sh --apply-all
+TimeoutStartSec=180s
+# Самоотключение после успешного выполнения
+ExecStartPost=/usr/bin/systemctl disable --now %N
+ExecStartPost=/bin/sh -c 'rm -f /etc/systemd/system/%N; /usr/bin/systemctl daemon-reload'
+
+[Install]
+WantedBy=multi-user.target

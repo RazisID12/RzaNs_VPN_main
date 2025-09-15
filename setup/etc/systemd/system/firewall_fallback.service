@@ -1,0 +1,30 @@
+#/etc/systemd/system/firewall_fallback.service
+[Unit]
+Description=Fallback rules (idempotent emergency rules when WG fails)
+DefaultDependencies=no
+After=local-fs.target
+Wants=local-fs.target
+ConditionPathExists=/opt/rzans_vpn_main/firewall/fallback.sh
+
+[Service]
+Type=oneshot
+ExecStart=/opt/rzans_vpn_main/firewall/fallback.sh apply
+TimeoutStartSec=30s
+SyslogIdentifier=rzans-firewall-fallback
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+# Capabilities
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallFilter=@system-service @network-io
+
+[Install]
+WantedBy=

@@ -1,0 +1,41 @@
+# /etc/systemd/system/proxy.service
+[Unit]
+Description=DNS RPZ proxy (helper for kresd@2/@3)
+After=local-fs.target firewall.service
+Wants=firewall.service
+RequiresMountsFor=/opt/rzans_vpn_main
+ConditionPathExists=/opt/rzans_vpn_main/proxy.py
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/rzans_vpn_main
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/rzans_vpn_main/proxy.py
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10s
+KillSignal=SIGTERM
+
+# Capabilities
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8 ::1
+
+[Install]
+WantedBy=multi-user.target

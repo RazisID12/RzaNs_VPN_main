@@ -1,0 +1,65 @@
+# ========================================================================================
+# settings.yaml (минимальный автосозданный шаблон)
+# ========================================================================================
+# 1) ─── Базовые параметры ───────────────────────────────────────────────────────────────
+server:
+# SSH:
+  port_ssh: 22                                              # auto = 22
+# Домен:
+  domain: auto                                              # auto = используем IP
+# Внешние IP:
+  ipv4: auto                                                # auto = выбор IP по умолчанию
+  ipv6: auto                                                # auto = выбор IP по умолчанию
+# Вышестоящий DNS: cloudflare | quad9 | google
+dns:
+  upstream: cloudflare
+  # авто-заполнение:
+  ipv4: up://1.1.1.1 | 1.0.0.1
+  ipv6: up://2606:4700:4700::1111 | 2606:4700:4700::1001
+  dot: tls://one.one.one.one
+  port_tls: 853                                             # auto = 853
+# 2) ─── Параметры безопасности ──────────────────────────────────────────────────────────
+# Доверенные IPv4/IPv6 для SSH/Fail2ban/AdGuard Home:
+allowip:
+  ipv4: auto                                                # auto = SSH по IPv4 открыт для всех
+  ipv6: auto                                                # auto = SSH по IPv6 закрыт для всех
+# 3) ─── Параметры VPN ───────────────────────────────────────────────────────────────────
+vpn:
+# Порты:
+  ports:
+    split: 500                                              # auto = 500 для Split VPN
+    full: 4500                                              # auto = 4500 для Full  VPN
+# Подсети IPv4:
+  nets:
+    split: 10.29.8.0/24                                     # auto = 10.29.8.0/24 для Split VPN
+    full: 10.28.8.0/24                                      # auto = 10.28.8.0/24 для Full  VPN
+# Fake-IP диапазон для proxy.py:
+  map_dns: 10.30.0.0/15                                     # auto = 10.30.0.0/15
+# SNAT name: <internal IP> <external IP>:
+snat: auto
+# 4) ─── Сервисы ─────────────────────────────────────────────────────────────────────────
+# Fail2ban:
+fail2ban:
+  enable: false
+  # авто-заполнение:
+  version: v0.0.0
+  updated: dd.mm.yyyy
+# AdGuard Home:
+adguard_home:
+  enable: false
+  # авто-заполнение:
+  version: v0.0.0
+  updated: dd.mm.yyyy
+# 5) ─── Маршрутизация (doall.sh) ────────────────────────────────────────────────────────
+routing:
+  route_all: false
+  flags:
+    discord: true
+    cloudflare: true
+    amazon: false
+    hetzner: false
+    digitalocean: false
+    ovh: false
+    telegram: false
+    google: false
+    akamai: false

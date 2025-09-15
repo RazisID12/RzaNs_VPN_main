@@ -1,0 +1,33 @@
+# /etc/systemd/system/dwnld_update.service
+[Unit]
+Description=Dwnld update (full)
+After=local-fs.target firewall.service network-online.target
+Wants=firewall.service network-online.target
+RequiresMountsFor=/opt/rzans_vpn_main /opt/AdGuardHome
+ConditionPathExists=/opt/rzans_vpn_main/doall.sh
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/rzans_vpn_main
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment=DEBIAN_FRONTEND=noninteractive
+# не пускать параллельные запуски (вдруг предыдущий ещё идет)
+ExecStart=/usr/bin/flock -n /run/rzans-update.lock /opt/rzans_vpn_main/doall.sh full
+# журнал важнее рестартов — таймер вызовет повторно по расписанию
+TimeoutStartSec=1h
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+Nice=10
+IOSchedulingClass=best-effort
+UMask=027
+SyslogIdentifier=rzans-update
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+# apt/dpkg требует writable /usr,/etc,/var → ProtectSystem выключаем
+ProtectSystem=off
+ProtectHome=no
+
+[Install]
+WantedBy=

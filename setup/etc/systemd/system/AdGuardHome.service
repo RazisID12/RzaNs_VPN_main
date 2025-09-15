@@ -1,0 +1,44 @@
+# /etc/systemd/system/AdGuardHome.service
+[Unit]
+Description=AdGuard Home
+Documentation=https://adguard.com/
+After=local-fs.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+Wants=firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service
+RequiresMountsFor=/opt/AdGuardHome
+ConditionPathExists=/opt/AdGuardHome/AdGuardHome.yaml
+Conflicts=systemd-resolved.service
+
+[Service]
+Type=simple
+User=adguardhome
+Group=adguardhome
+WorkingDirectory=/opt/AdGuardHome
+ExecStart=/opt/AdGuardHome/AdGuardHome \
+          -c /opt/AdGuardHome/AdGuardHome.yaml \
+          -w /opt/AdGuardHome \
+          --verbose
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+
+# Capabilities
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/AdGuardHome
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
