@@ -203,9 +203,9 @@ if (( RUN_HOSTS )); then
     | LC_ALL=C sort -u > temp/include-hosts.norm
 
   # удаляем вложенные домены (оставляем только верхний из цепочки)
-  sed 's/$/$/'  temp/include-hosts.norm  > temp/include-hosts.$
-  sed 's/^/./'  temp/include-hosts.$     > temp/_subs.mark
-  grep -vFf      temp/_subs.mark         temp/include-hosts.$ > temp/include-hosts.top || true
+  sed 's/$/$/'  temp/include-hosts.norm  > temp/include-hosts.eol
+  sed 's/^/./'  temp/include-hosts.eol   > temp/_subs.mark
+  grep -vFf     temp/_subs.mark          temp/include-hosts.eol > temp/include-hosts.top || true
 
   if [[ "${ROUTE_ALL,,}" == "y" ]]; then
     echo '.' > result/include-hosts.txt
