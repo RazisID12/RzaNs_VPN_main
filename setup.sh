@@ -864,11 +864,11 @@ echo "routing.flags effective (from: $SETTINGS_YAML):"
 # На всякий случай — сверка ожиданий против файла
 echo -n "EXPECT dns.upstream=$DNS_UPSTREAM ; GOT="
 /usr/bin/yq e -r '.dns.upstream' "$SETTINGS_YAML" || true
-echo -n "EXPECT adguard_home.enable=$( [[ $ADGUARD_HOME == y ]] && echo true || echo false ) ; GOT="
+echo -n "EXPECT adguard_home.enable=$( [[ $(normalize_yn "$ADGUARD_HOME") == y ]] && echo true || echo false ) ; GOT="
 /usr/bin/yq e -r '.adguard_home.enable' "$SETTINGS_YAML" || true
-echo -n "EXPECT fail2ban.enable=$( [[ $SSH_PROTECTION == y ]] && echo true || echo false ) ; GOT="
+echo -n "EXPECT fail2ban.enable=$( [[ $(normalize_yn "$SSH_PROTECTION") == y ]] && echo true || echo false ) ; GOT="
 /usr/bin/yq e -r '.fail2ban.enable' "$SETTINGS_YAML" || true
-echo -n "EXPECT routing.flags.telegram=$( [[ $TELEGRAM_INCLUDE == y ]] && echo true || echo false ) ; GOT="
+echo -n "EXPECT routing.flags.telegram=$( [[ $(normalize_yn "$TELEGRAM_INCLUDE") == y ]] && echo true || echo false ) ; GOT="
 /usr/bin/yq e -r '.routing.flags.telegram' "$SETTINGS_YAML" || true
 
 # и как это увидит downloader (через yaml_bool, как в update.sh)
