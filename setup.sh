@@ -778,22 +778,6 @@ echo "Using settings file: $SETTINGS_YAML"
 # shellcheck source=/opt/rzans_vpn_main/settings/settings.sh
 source /opt/rzans_vpn_main/settings/settings.sh
 
-# Создаём недостающие ветки (идемпотентно), чтобы запись шла без ошибок
-/usr/bin/yq -i e '
-  .routing |= (. // {}) |
-  .routing.route_all |= (. // false) |
-  .routing.flags |= (. // {}) |
-  .routing.flags.discord |= (. // false) |
-  .routing.flags.cloudflare |= (. // false) |
-  .routing.flags.amazon |= (. // false) |
-  .routing.flags.hetzner |= (. // false) |
-  .routing.flags.digitalocean |= (. // false) |
-  .routing.flags.ovh |= (. // false) |
-  .routing.flags.telegram |= (. // false) |
-  .routing.flags.google |= (. // false) |
-  .routing.flags.akamai |= (. // false)
-' "$SETTINGS_YAML"
-
 echo
 echo "yq version: $(/usr/bin/yq --version 2>/dev/null || echo unknown)"
 echo 'Saving answers…'
@@ -825,28 +809,19 @@ fi
 : "${TELEGRAM_INCLUDE:=n}"; : "${GOOGLE_INCLUDE:=n}"
 : "${AKAMAI_INCLUDE:=n}"
 
-# Пишем напрямую через yq (обходя возможные no-op в yaml_set)
-# Безопасная обёртка для булевых значений
-bool_val() { [[ "$1" == y ]] && echo true || echo false; }
-
-# атомарная запись под локом (если есть), но не блокируемся на ошибке
+# Атомарная запись под локом (yaml_set сам умеет брать лок, внешний — для партии)
 _ensure_settings_lock 2>/dev/null || true
 
-/usr/bin/yq -i e ".dns.upstream = \"${DNS_UPSTREAM}\""                "$SETTINGS_YAML"
-/usr/bin/yq -i e ".adguard_home.enable = $(bool_val "$ADGUARD_HOME")" "$SETTINGS_YAML"
-/usr/bin/yq -i e ".fail2ban.enable = $(bool_val "$SSH_PROTECTION")"   "$SETTINGS_YAML"
-/usr/bin/yq -i e ".server.domain = \"${SERVER_HOST:-auto}\""          "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.route_all = $(bool_val "$ROUTE_ALL")"      "$SETTINGS_YAML"
+yaml_set_str  'dns.upstream'            "$DNS_UPSTREAM"
+yaml_set_bool 'adguard_home.enable'     "$ADGUARD_HOME"
+yaml_set_bool 'fail2ban.enable'         "$SSH_PROTECTION"
+yaml_set_str  'server.domain'           "${SERVER_HOST:-auto}"
+yaml_set_bool 'routing.route_all'       "$ROUTE_ALL"
 
-/usr/bin/yq -i e ".routing.flags.discord = $(bool_val "$DISCORD_INCLUDE")"           "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.cloudflare = $(bool_val "$CLOUDFLARE_INCLUDE")"     "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.amazon = $(bool_val "$AMAZON_INCLUDE")"             "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.hetzner = $(bool_val "$HETZNER_INCLUDE")"           "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.digitalocean = $(bool_val "$DIGITALOCEAN_INCLUDE")" "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.ovh = $(bool_val "$OVH_INCLUDE")"                   "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.telegram = $(bool_val "$TELEGRAM_INCLUDE")"         "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.google = $(bool_val "$GOOGLE_INCLUDE")"             "$SETTINGS_YAML"
-/usr/bin/yq -i e ".routing.flags.akamai = $(bool_val "$AKAMAI_INCLUDE")"             "$SETTINGS_YAML"
+for k in discord cloudflare amazon hetzner digitalocean ovh telegram google akamai; do
+  vname="$(tr '[:lower:]' '[:upper:]' <<<"$k")_INCLUDE"
+  yaml_set_bool "routing.flags.$k" "${!vname}"
+done
 
 _release_settings_lock 2>/dev/null || true
 sync || true

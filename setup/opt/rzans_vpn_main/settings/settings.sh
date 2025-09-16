@@ -1487,6 +1487,21 @@ yaml_set() {
   return 0
 }
 
+# Удобные обёртки для записи булевых и строковых значений в settings.yaml
+#  • yaml_set_bool KEY y|n        → true/false
+#  • yaml_set_str  KEY "value"    → безопасно экранирует кавычки
+yaml_set_bool() {
+  local key="$1" yn="${2:-n}"
+  case "${yn,,}" in
+    y|yes|true|1|on|enable|enabled)  yaml_set "$key" "true"  ;;
+    n|no|false|0|off|disable|disabled|"") yaml_set "$key" "false" ;;
+    *) yaml_set "$key" "$yn" ;;  # на случай, если передали уже true/false
+  esac
+}
+yaml_set_str() {
+  local key="$1" v="${2-}"; v="${v//\"/\\\"}"; yaml_set "$key" "\"$v\""
+}
+
 # Единый резолвер профиля апстрима: всё берём из dns.upstream; порт — из dns.port_tls.
 __upstream_resolve() {
   local up
