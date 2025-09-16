@@ -760,6 +760,10 @@ _primary_iface() {
   printf '%s' "$ifc"
 }
 
+# Публичная обёртка для скриптов up/down: без ожидания по умолчанию.
+# Не дублирует логику — использует _primary_iface.
+server_iface() { _primary_iface "${1:-0}"; }
+
 # дождаться глобального адреса на интерфейсе
 # wait_ip <iface> [timeout] [family 4|6] → печатает IP или возвращает 1
 wait_ip() {
@@ -1450,6 +1454,10 @@ _primary_iface_v6() {
   [[ -z $ifc ]] && ifc="$(_primary_iface "$timeout")"
   printf '%s' "${ifc%%@*}"
 }
+
+# Публичная обёртка для v6-ориентированного выбора интерфейса.
+# Без ожидания по умолчанию.
+server_iface_v6() { _primary_iface_v6 "${1:-0}"; }
 
 # Внешний IPv6: аналогично IPv4. Возвращает '::' при неудаче.
 server_ip6() {
