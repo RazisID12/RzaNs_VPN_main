@@ -254,7 +254,6 @@ maybe_reboot() {
 run_lists_only() {
   _require_root
   echo "[MODE] lists"
-  _with_lock settings_heal || true
   install -d -m 755 "$DOWNLOAD_DIR"
   download_host_lists
   download_ip_lists
