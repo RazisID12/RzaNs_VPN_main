@@ -947,12 +947,12 @@ __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 __pjson_to_dot() {
   # Вход должен быть JSON-массивом пути. Если прилетела строка — вернуть как есть.
   case "$1" in
-    \[*\])  printf '%s' "$1" | yq e -r 'from_json | map(tostring) | join(".")' - ;;
+    \[*\])  printf '%s' "$1" | yq e -r 'fromjson | map(tostring) | join(".")' - ;;
     *)      printf '%s\n' "$1" ;;
   esac
 }
 __get_json_at()    { P="$2" yq e -o=json -I=0 'getpath(env(P)|from_json)' "$1" 2>/dev/null; }
-__type_at()        { P="$2" yq e -r 'type(getpath(env(P)|from_json))'     "$1" 2>/dev/null; }
+__type_at()        { P="$2" yq e -r 'type(getpath(env(P)|fromjson))'     "$1" 2>/dev/null; }
 
 # Пути только по map-ключам (форма файла, без индексов массивов)
 __map_value_paths() {
@@ -1137,7 +1137,7 @@ settings_heal() {
     V="$(__get_json_at "$S" "$P")"
     __kv_valid "$key" "$V" "$TDEF" || continue
     tmp="$(mktemp)"
-    PJSON="$P" VAL="$V" yq e -P 'setpath(env(PJSON)|from_json; (env(VAL)|from_json))' "$DST" >"$tmp" \
+    PJSON="$P" VAL="$V" yq e -P 'setpath(env(PJSON)|fromjson; (env(VAL)|fromjson))' "$DST" >"$tmp" \
       && mv -f -- "$tmp" "$DST" || rm -f "$tmp"
   done
 
@@ -2202,10 +2202,10 @@ agh_heal() {
     local PJSON VAL tmp2
     for PJSON in "${_paths_merge[@]}"; do
       # значение из MERGE_TMP по этому пути
-      VAL="$(P="$PJSON" yq e -o=json -I=0 'getpath(env(P)|from_json)' "$MERGE_TMP" 2>/dev/null || echo 'null')"
+      VAL="$(P="$PJSON" yq e -o=json -I=0 'getpath(env(P)|fromjson)' "$MERGE_TMP" 2>/dev/null || echo 'null')"
       tmp2="$(mktemp)"
       P="$PJSON" V="$VAL" \
-        yq e -P 'setpath( env(P)|from_json; (env(V)|from_json) )' "$GEN_TMP" >"$tmp2" \
+        yq e -P 'setpath( env(P)|fromjson; (env(V)|fromjson) )' "$GEN_TMP" >"$tmp2" \
         || { rm -f "$tmp2"; continue; }
       mv -f -- "$tmp2" "$GEN_TMP"
     done
