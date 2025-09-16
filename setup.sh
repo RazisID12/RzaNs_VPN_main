@@ -939,7 +939,7 @@ enable_post_install() {
   enable_if_present apply.path
   enable_if_present firewall.service
   enable_if_present proxy.service
-  enable_if_present dwnld_update.timer
+#  enable_if_present dwnld_update.timer
 }
 
 enable_post_install
