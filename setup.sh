@@ -19,6 +19,7 @@ if [[ ! -t 0 && ! -t 1 && ! -t 2 && ! -r /dev/tty ]]; then NONINTERACTIVE=1; fi
 is_interactive() { [[ $NONINTERACTIVE -eq 0 && ( -t 0 || -t 1 || -t 2 || -r /dev/tty ) ]]; }
 
 normalize_yn() {
+  # also accepts true/false/enabled/disabled for CLI overrides
   local v="${1,,}"
   case "$v" in
     y|yes|true|1|on|enable|enabled)     echo y ;;

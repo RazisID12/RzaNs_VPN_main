@@ -895,6 +895,30 @@ __is_port()        { [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 )
 __is_bool_json()   { [[ "$1" == "true" || "$1" == "false" ]]; }
 __is_auto_json()   { [[ "${1,,}" == '"auto"' ]]; }
 
+# -- bool helpers: accept legacy "y/n/yes/no/..." and coerce to JSON true/false
+__boolish_unquote_lower() {
+  local v="$1"
+  case "$v" in
+    \"*\") v="${v:1:${#v}-2}";;
+  esac
+  printf '%s' "${v,,}"
+}
+__is_boolish_json() {
+  local s; s="$(__boolish_unquote_lower "$1")"
+  case "$s" in
+    true|false|y|yes|1|on|enable|enabled|n|no|0|off|disable|disabled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+__to_json_bool() {
+  local s; s="$(__boolish_unquote_lower "$1")"
+  case "$s" in
+    true|y|yes|1|on|enable|enabled)  printf 'true'  ;;
+    false|n|no|0|off|disable|disabled) printf 'false' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 __is_ipv4() {
   local re='^((25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})\.){3}(25[0-5]|2[0-4][0-9]|1?[0-9]{1,2})$'
   [[ "$1" =~ $re ]]
@@ -979,9 +1003,15 @@ __kv_valid() {
       return 0 ;;
   esac
 
+  # Булевы по схеме: принимаем как строгие JSON-boolean, так и «boolish» строки
+  if [[ "$tdef" == "!!bool" ]]; then
+    __is_boolish_json "$vjson"
+    return $?
+  fi
+
   # routing.* — строгие булевы
   if [[ "$key" == routing.route_all || "$key" == routing.flags.* || "$key" =~ ^routing\.flags\. ]]; then
-    __is_bool_json "$vjson"; return $?
+    __is_boolish_json "$vjson"; return $?
   fi
 
   case "$key" in
@@ -1103,6 +1133,14 @@ __settings_need_heal() {
     key="$(__pjson_to_dot "$P")"
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
+    # Миграция: если по схеме ожидается boolean, а в файле лежит «y/n/yes/no/...»
+    # (то есть это boolish-строка, НЕ строгий JSON-bool) — нужно лечить.
+    if [[ "$TDEF" == "!!bool" ]]; then
+      if __is_boolish_json "$V" && ! __is_bool_json "$V"; then
+        return 0
+      fi
+    fi
+
     __kv_valid "$key" "$V" "$TDEF" || return 0
   done
   return 1  # всё валидно → heal не нужен
@@ -1136,8 +1174,17 @@ settings_heal() {
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
     __kv_valid "$key" "$V" "$TDEF" || continue
+    # Если по схеме это boolean и значение boolish-строкой — конвертируем в true/false
+    local VSET="$V"
+    if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
+      VSET="$(__to_json_bool "$V")"
+    fi
     tmp="$(mktemp)"
-    PJSON="$P" VAL="$V" yq e -P 'setpath(env(PJSON)|fromjson; (env(VAL)|fromjson))' "$DST" >"$tmp" \
+    PJSON="$P" VAL="$VSET" \
+      yq e -P 'setpath(
+                 env(PJSON)|fromjson;
+                 (env(VAL)|fromjson)
+               )' "$DST" >"$tmp" \
       && mv -f -- "$tmp" "$DST" || rm -f "$tmp"
   done
 
