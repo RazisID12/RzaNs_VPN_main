@@ -878,7 +878,8 @@ _yaml_merged() {
   if [[ ${#files[@]} -eq 1 ]]; then
     cat "${files[0]}"
   else
-    yq ea -P 'select(fi==0) * select(fi==1)' "${files[@]}"
+    # корректный мердж для любого числа файлов
+    yq ea -P '. as $item ireduce ({}; . * $item)' "${files[@]}"
   fi
 }
 
