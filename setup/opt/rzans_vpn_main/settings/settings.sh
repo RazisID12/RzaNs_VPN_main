@@ -951,7 +951,7 @@ __pjson_to_dot() {
     *)      printf '%s\n' "$1" ;;
   esac
 }
-__get_json_at()    { P="$2" yq e -o=json -I=0 'getpath(env(P)|from_json)' "$1" 2>/dev/null; }
+__get_json_at()    { P="$2" yq e -o=json -I=0 'getpath(env(P)|fromjson)' "$1" 2>/dev/null; }
 __type_at()        { P="$2" yq e -r 'type(getpath(env(P)|fromjson))'     "$1" 2>/dev/null; }
 
 # Пути только по map-ключам (форма файла, без индексов массивов)
