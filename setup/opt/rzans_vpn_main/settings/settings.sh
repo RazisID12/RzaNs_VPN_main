@@ -996,6 +996,12 @@ __pjson_to_dot() { # JSON-массив пути → dot-строка (или у�
   esac
 }
 __get_json_at()    { local P="$2"; yq e -o=json -I=0 '.' "$1" | jq -c --argjson P "$P" 'getpath($P)' 2>/dev/null; }
+## ↑ заменяем на явный маркер отсутствия пути (не путать с null)
+__get_json_at() {
+  local P="$2"
+  yq e -o=json -I=0 '.' "$1" \
+  | jq -c --argjson P "$P" 'try getpath($P) catch "__absent__" // "__absent__"' 2>/dev/null
+}
 __type_at()        {
   local P="$2"
   yq e -o=json -I=0 '.' "$1" \
@@ -1024,16 +1030,20 @@ __map_value_paths() { # печатает dot-пути ТОЛЬКО по map-кл
 # $1=dotkey $2=value_json $3=default_yaml_type (!!str/!!int/!!bool/!!seq/!!map)
 __kv_valid() {
   local key="$1" vjson="$2" tdef="$3" s
+  # Не переносим отсутствие значения/пустоту
+  if [[ "$vjson" == "null" || "$vjson" == '"__absent__"' ]]; then
+    return 1
+  fi
   case "$vjson" in
     null) s="";;
     \"*\") s="${vjson:1:${#vjson}-2}";;
     *) s="$vjson";;
   esac
 
-  # Автозаполняемые — не валидируем
+  # Автокосметику/служебные поля НЕ переносим — их выставит autofill_settings()
   case "$key" in
     dns.ipv4|dns.ipv6|dns.dot|fail2ban.version|fail2ban.updated|adguard_home.version|adguard_home.updated)
-      return 0 ;;
+      return 1 ;;
   esac
 
   # Булевы по схеме: принимаем как строгие JSON-boolean, так и «boolish» строки
@@ -1131,12 +1141,19 @@ __kv_valid() {
       __is_bool_json "$vjson"
       ;;
     *)
-      # Любой другой ключ: тип совпадает с типом в defaults
+      # Строгая проверка соответствия типов значению из settings
       case "$tdef" in
-        "!!str"|"!!int"|"!!bool"|"!!seq"|"!!map") [[ -n "$tdef" ]] ;;
+        "!!str")
+          [[ "$vjson" == \"*\"      ]] || return 1 ;;
+        "!!int")
+          [[ "$vjson" =~ ^-?[0-9]+$ ]] || return 1 ;;
+        "!!seq")
+          [[ "$vjson" == \[*\]      ]] || return 1 ;;
+        "!!map")
+          [[ "$vjson" == \{*\}      ]] || return 1 ;;
+        "!!bool") __is_boolish_json "$vjson" || return 1 ;;
         *) return 1 ;;
-      esac
-      ;;
+      esac ;;
   esac
 }
 
@@ -1184,22 +1201,27 @@ settings_heal() {
   local S="$SETTINGS_YAML" D="$DEFAULTS_YAML"
   [[ -s "$D" ]] || { echo "ERROR: defaults not found: $D" >&2; return 1; }
 
-  # Файл отсутствует/пуст/битый YAML → ставим канон
+  # Файл отсутствует/пуст/битый YAML → берём дефолт (и сохраняем бэкап битого)
   if [[ ! -s "$S" ]]; then
     install -D -m600 "$D" "$S"; settings_fix_perms || true; return 0
   fi
-  yq e '.' "$S" >/dev/null 2>&1 || { cp -f "$D" "$S"; settings_fix_perms || true; return 0; }
+  if ! yq e '.' "$S" >/dev/null 2>&1; then
+    cp -f -- "$S" "${S}.broken.$(date +%s)" 2>/dev/null || true
+    cp -f -- "$D" "$S"
+    settings_fix_perms || true
+    return 0
+  fi
 
   # Если всё валидно — не трогаем
   if ! __settings_need_heal; then
     return 0
   fi
 
-  # Пересборка: копия defaults + перенос ТОЛЬКО валидных значений из текущего
-  # БАЗА = defaults, правим IN-PLACE без -P, чтобы сохранить комментарии/верстку defaults.
-  local DST P TDEF V key
-  DST="$(mktemp)"
-  cp -f "$D" "$DST"
+  # ① Собираем ОЧИЩЕННЫЙ поднабор (только валидные значения по схеме) → CLEAN_TMP (json/yaml)
+  # ② Оверлей: копия defaults + перенос ТОЛЬКО валидных значений → DST (с комментариями)
+  local DST CLEAN_TMP P TDEF V key
+  DST="$(mktemp)";        cp -f "$D" "$DST"
+  CLEAN_TMP="$(mktemp)";  printf '{}\n' >"$CLEAN_TMP"
   mapfile -t _paths < <(
     yq e -o=json -I=0 '.' "$D" \
     | jq -c 'paths | select((.[-1]|type)=="string")'
@@ -1214,12 +1236,19 @@ settings_heal() {
     if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
       VSET="$(__to_json_bool "$V")"
     fi
-    # ВАЖНО: редактируем копию defaults IN-PLACE (без -P) — сохраняем комментарии/порядок.
+    # ② Оверлей в копию defaults IN-PLACE (без -P): сохраняем комментарии/порядок.
     PJSON="$P" VAL="$VSET" yq e -i '
       (env(VAL)   | (try fromjson catch null)) as $val
       | (env(PJSON) | (try fromjson catch [])) as $path
-      | setpath($path; $val)
+      | if $val == null then . else setpath($path; $val) end
     ' "$DST"
+    # ① Параллельно наполняем «очищенный» файл (только перенесённые значения)
+    local tmp2; tmp2="$(mktemp)"
+    PJSON="$P" VAL="$VSET" yq e -P '
+      (env(VAL)   | (try fromjson catch null)) as $val
+      | (env(PJSON) | (try fromjson catch [])) as $path
+      | if $val == null then . else setpath($path; $val) end
+    ' "$CLEAN_TMP" >"$tmp2" && mv -f -- "$tmp2" "$CLEAN_TMP"
   done
 
   local _ch=0
