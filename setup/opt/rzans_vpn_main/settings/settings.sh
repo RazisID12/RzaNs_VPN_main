@@ -1236,19 +1236,17 @@ settings_heal() {
     if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
       VSET="$(__to_json_bool "$V")"
     fi
-    # ② Оверлей в копию defaults IN-PLACE (без -P): сохраняем комментарии/порядок.
-    PJSON="$P" VAL="$VSET" yq e -i '
-      (env(VAL)   | from_yaml) as $val
-      | (env(PJSON) | from_yaml) as $path
-      | if $val == null then . else setpath($path; $val) end
-    ' "$DST"
-    # ① Параллельно наполняем «очищенный» файл (только перенесённые значения)
-    local tmp2; tmp2="$(mktemp)"
-    PJSON="$P" VAL="$VSET" yq e -P '
-      (env(VAL)   | from_yaml) as $val
-      | (env(PJSON) | from_yaml) as $path
-      | if $val == null then . else setpath($path; $val) end
-    ' "$CLEAN_TMP" >"$tmp2" && mv -f -- "$tmp2" "$CLEAN_TMP"
+    # ② Оверлей в копию defaults IN-PLACE: прямое присваивание по dot-пути.
+    #    Пропускаем null, чтобы не затирать дефолты.
+    if [[ "$VSET" != "null" ]]; then
+      # В DST сохраняются комментарии/порядок из defaults.
+      yq e -i ".${key} = (env(VSET) | from_yaml)" "$DST"
+      # ① Параллельно наполняем «очищенный» файл (только перенесённые значения)
+      #    Стартуем с {} и тоже используем прямое присваивание — yq v4 создаёт недостающие узлы.
+      tmp2="$(mktemp)"
+      VSET="$VSET" yq e -P ".${key} = (env(VSET) | from_yaml)" "$CLEAN_TMP" >"$tmp2" \
+        && mv -f -- "$tmp2" "$CLEAN_TMP"
+    fi
   done
 
   local _ch=0
