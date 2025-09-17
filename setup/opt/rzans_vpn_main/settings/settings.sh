@@ -1195,9 +1195,11 @@ settings_heal() {
     return 0
   fi
 
-  # Пересборка: копия defaults + перенос валидных значений из текущего
-  local DST tmp P TDEF V key
-  DST="$(mktemp)"; cp -f "$D" "$DST"
+  # Пересборка: копия defaults + перенос ТОЛЬКО валидных значений из текущего
+  # БАЗА = defaults, правим IN-PLACE без -P, чтобы сохранить комментарии/верстку defaults.
+  local DST P TDEF V key
+  DST="$(mktemp)"
+  cp -f "$D" "$DST"
   mapfile -t _paths < <(
     yq e -o=json -I=0 '.' "$D" \
     | jq -c 'paths | select((.[-1]|type)=="string")'
@@ -1212,13 +1214,12 @@ settings_heal() {
     if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
       VSET="$(__to_json_bool "$V")"
     fi
-    tmp="$(mktemp)"
-    PJSON="$P" VAL="$VSET" \
-      yq e -P 'setpath(
-                 (env(PJSON) | (try fromjson catch []));
-                 (env(VAL)   | (try fromjson catch null))
-               )' "$DST" >"$tmp" \
-      && mv -f -- "$tmp" "$DST" || rm -f "$tmp"
+    # ВАЖНО: редактируем копию defaults IN-PLACE (без -P) — сохраняем комментарии/порядок.
+    PJSON="$P" VAL="$VSET" yq e -i '
+      (env(VAL)   | (try fromjson catch null)) as $val
+      | (env(PJSON) | (try fromjson catch [])) as $path
+      | setpath($path; $val)
+    ' "$DST"
   done
 
   local _ch=0
