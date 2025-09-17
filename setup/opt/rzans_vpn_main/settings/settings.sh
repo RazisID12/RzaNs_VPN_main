@@ -447,10 +447,10 @@ run_needs() {
 
   # --- enable/disable (только при рассинхроне) -------------------------------
   if [[ -n "${NEED[svc:agh.enable]:-}" ]]; then
-    if ! _svc_is_active AdGuardHome; then _settings__svc enable --now AdGuardHome || true; DID_AGH_ENABLE=1; fi
+    if ! _svc_is_active AdGuardHome.service; then _settings__svc enable --now AdGuardHome.service || true; DID_AGH_ENABLE=1; fi
   fi
   if [[ -n "${NEED[svc:agh.disable]:-}" ]]; then
-    if _svc_is_active AdGuardHome || _svc_is_enabled AdGuardHome; then _settings__svc disable --now AdGuardHome 2>/dev/null || true; fi
+    if _svc_is_active AdGuardHome.service || _svc_is_enabled AdGuardHome.service; then _settings__svc disable --now AdGuardHome.service 2>/dev/null || true; fi
   fi
   if [[ -n "${NEED[svc:fail2ban.enable]:-}" ]]; then
     if ! _svc_is_active fail2ban; then _settings__svc enable --now fail2ban || true; DID_F2B_ENABLE=1; fi
@@ -462,18 +462,18 @@ run_needs() {
   # --- post-enable AGH: применить DNAT только ПОСЛЕ запуска сервиса ----------
   if [[ -n "${NEED[dns:map-post-agh]:-}" ]]; then
     # ждём до ~8s, чтобы AGH стал active (не держим тяжёлых локов)
-    if ! _svc_is_active AdGuardHome; then
+    if ! _svc_is_active AdGuardHome.service; then
       if command -v systemctl >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-        timeout 8s bash -c 'until systemctl is-active --quiet AdGuardHome; do sleep 0.5; done' 2>/dev/null || true
+        timeout 8s bash -c 'until systemctl is-active --quiet AdGuardHome.service; do sleep 0.5; done' 2>/dev/null || true
       else
         for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
-          _svc_is_active AdGuardHome && break
+          _svc_is_active AdGuardHome.service && break
           sleep 0.5
         done
       fi
     fi
     # Переключаем DNAT 53 → AGH только если сервис реально активен.
-    if _svc_is_active AdGuardHome; then
+    if _svc_is_active AdGuardHome.service; then
       "${FIREWALL_DIR}/up.sh" --dns-map || true
     else
       echo "[INFO] dns:map-post-agh: AdGuardHome не активен, DNAT оставлен без изменений" >&2
@@ -489,7 +489,7 @@ run_needs() {
      && [[ "$(yaml_bool 'adguard_home.enable')" == y ]] \
      && (( AGH_ALLOWED_CHANGED )) \
      && (( DID_AGH_ENABLE == 0 )); then
-    _settings__svc try-reload-or-restart AdGuardHome || true
+    _settings__svc try-reload-or-restart AdGuardHome.service || true
   fi
   if [[ -n "${NEED[svc:sshd.reload]:-}" ]] && (( SSHD_PORT_CHANGED )); then
     _settings__svc try-reload-or-restart sshd || true
@@ -544,9 +544,9 @@ _ipv6_available() {
 _agh_unit_user() {
   local u=""
   if command -v systemctl >/dev/null 2>&1; then
-    u="$(systemctl show -p User --value AdGuardHome 2>/dev/null || true)"
+    u="$(systemctl show -p User --value AdGuardHome.service 2>/dev/null || true)"
     [[ -z "$u" ]] && u="$(
-      ( systemctl cat AdGuardHome 2>/dev/null || true ) | awk -F= '/^[[:space:]]*User=/{print $2; exit}'
+      ( systemctl cat AdGuardHome.service 2>/dev/null || true ) | awk -F= '/^[[:space:]]*User=/{print $2; exit}'
     )"
   fi
   if [[ -z "$u" ]]; then
@@ -730,7 +730,7 @@ agh_allowed_clients() {
 
   AGH_ALLOWED_CHANGED=$_changed
   if (( _changed == 1 )) && [[ "$(yaml_bool 'adguard_home.enable')" == y ]] && [[ "${DEFER_RESTARTS:-0}" != "1" ]]; then
-    _settings__svc try-reload-or-restart AdGuardHome >/dev/null 2>&1 || true
+    _settings__svc try-reload-or-restart AdGuardHome.service >/dev/null 2>&1 || true
   fi
 }
 
@@ -995,7 +995,6 @@ __pjson_to_dot() { # JSON-массив пути → dot-строка (или у�
       ;;
   esac
 }
-__get_json_at()    { local P="$2"; yq e -o=json -I=0 '.' "$1" | jq -c --argjson P "$P" 'getpath($P)' 2>/dev/null; }
 ## ↑ заменяем на явный маркер отсутствия пути (не путать с null)
 __get_json_at() {
   local P="$2"
@@ -1089,8 +1088,15 @@ __kv_valid() {
       ;;
     allowip.ipv4)
       __is_auto_json "$vjson" && return 0
-      [[ "$vjson" == \[**\] ]] || return 1
-      mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+      local _is_array=0
+      [[ "$vjson" == \[*\] ]] && _is_array=1
+      local -a _arr=()
+      if (( _is_array )); then
+        mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+      else
+        [[ "$vjson" == \"*\" ]] || return 1
+        _arr=( "$vjson" )
+      fi
       local x
       for x in "${_arr[@]}"; do
         [[ "$x" == \"*\" ]] || return 1
@@ -1101,8 +1107,15 @@ __kv_valid() {
       ;;
     allowip.ipv6)
       __is_auto_json "$vjson" && return 0
-      [[ "$vjson" == \[**\] ]] || return 1
-      mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+      local _is_array=0
+      [[ "$vjson" == \[*\] ]] && _is_array=1
+      local -a _arr=()
+      if (( _is_array )); then
+        mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+      else
+        [[ "$vjson" == \"*\" ]] || return 1
+        _arr=( "$vjson" )
+      fi
       local x
       for x in "${_arr[@]}"; do
         [[ "$x" == \"*\" ]] || return 1
@@ -1119,7 +1132,7 @@ __kv_valid() {
     snat)
       # "auto" ИЛИ массив объектов {name, internal, external}
       __is_auto_json "$vjson" && return 0
-      [[ "$vjson" == \[**\] ]] || return 1
+      [[ "$vjson" == \[*\] ]] || return 1
       local n i name internal external
       n="$(printf '%s' "$vjson" | yq e 'length' - 2>/dev/null)"
       [[ "$n" =~ ^[0-9]+$ ]] || return 1
@@ -1217,11 +1230,9 @@ settings_heal() {
     return 0
   fi
 
-  # ① Собираем ОЧИЩЕННЫЙ поднабор (только валидные значения по схеме) → CLEAN_TMP (json/yaml)
-  # ② Оверлей: копия defaults + перенос ТОЛЬКО валидных значений → DST (с комментариями)
-  local DST CLEAN_TMP P TDEF V key
-  DST="$(mktemp)";        cp -f "$D" "$DST"
-  CLEAN_TMP="$(mktemp)";  printf '{}\n' >"$CLEAN_TMP"
+  # Оверлей: копия defaults + перенос ТОЛЬКО валидных значений → DST (с комментариями)
+  local DST P TDEF V key
+  DST="$(mktemp)"; cp -f "$D" "$DST"
   mapfile -t _paths < <(
     yq e -o=json -I=0 '.' "$D" \
     | jq -c 'paths | select((.[-1]|type)=="string")'
@@ -1240,12 +1251,8 @@ settings_heal() {
     #    Пропускаем null, чтобы не затирать дефолты.
     if [[ "$VSET" != "null" ]]; then
       # В DST сохраняются комментарии/порядок из defaults.
-      yq e -i ".${key} = (env(VSET) | from_yaml)" "$DST"
-      # ① Параллельно наполняем «очищенный» файл (только перенесённые значения)
-      #    Стартуем с {} и тоже используем прямое присваивание — yq v4 создаёт недостающие узлы.
-      tmp2="$(mktemp)"
-      VSET="$VSET" yq e -P ".${key} = (env(VSET) | from_yaml)" "$CLEAN_TMP" >"$tmp2" \
-        && mv -f -- "$tmp2" "$CLEAN_TMP"
+      APPLY_VAL="$VSET" \
+        yq e -i ".${key} = (env(APPLY_VAL) | from_yaml)" "$DST"
     fi
   done
 
@@ -1616,7 +1623,12 @@ yaml_set_bool() {
   esac
 }
 yaml_set_str() {
-  local key="$1" v="${2-}"; v="${v//\"/\\\"}"; yaml_set "$key" "\"$v\""
+  local key="$1" v="${2-}"
+  # Экранируем обратные слеши, кавычки и переводы строк
+  v="${v//\\/\\\\}"
+  v="${v//\"/\\\"}"
+  v="${v//$'\n'/\\n}"
+  yaml_set "$key" "\"$v\""
 }
 
 # Единый резолвер профиля апстрима: всё берём из dns.upstream; порт — из dns.port_tls.
@@ -1858,7 +1870,7 @@ add_agh_client() {
     # Перед systemctl — отпускаем лок ТОЛЬКО если брали здесь
     if (( _acq )); then _release_settings_lock; _acq=0; fi
     if [[ "${ADD_NO_RESTART:-0}" != 1 ]]; then
-      _settings__svc try-reload-or-restart AdGuardHome >/dev/null 2>&1 || true
+      _settings__svc try-reload-or-restart AdGuardHome.service >/dev/null 2>&1 || true
     fi
   fi
   if (( _acq )); then _release_settings_lock; fi
@@ -1891,7 +1903,7 @@ remove_agh_client() {
     agh_fix_perms "$agh"
     if (( _acq )); then _release_settings_lock; _acq=0; fi
     if [[ "${ADD_NO_RESTART:-0}" != 1 ]]; then
-      _settings__svc try-reload-or-restart AdGuardHome >/dev/null 2>&1 || true
+      _settings__svc try-reload-or-restart AdGuardHome.service >/dev/null 2>&1 || true
     fi
   fi
  if (( _acq )); then _release_settings_lock; fi
@@ -2558,14 +2570,14 @@ wg_server_ensure_missing_only() {
   # Шаблон и серверные конфиги (только если отсутствуют)
   local TPL="/etc/wireguard/templates/rzans_vpn_main.conf" tmp
   if [[ ! -f /etc/wireguard/rzans_svpn_main.conf ]]; then
-    tmp="$(mktemp)" && _render "$TPL" >"$tmp" || { rm -f "$tmp"; return 1; }
+    local tmp; tmp="$(mktemp)" && _render "$TPL" >"$tmp" || { rm -f "$tmp"; return 1; }
     sed -i -E "s|^Address *=.*|Address = ${SVPN_ADDR}|" "$tmp"
     sed -i -E "s|^ListenPort *=.*|ListenPort = ${SPLIT_PORT}|" "$tmp"
     mv -f -- "$tmp" /etc/wireguard/rzans_svpn_main.conf
     _root0600 /etc/wireguard/rzans_svpn_main.conf
   fi
   if [[ ! -f /etc/wireguard/rzans_fvpn_main.conf ]]; then
-    tmp="$(mktemp)" && _render "$TPL" >"$tmp" || { rm -f "$tmp"; return 1; }
+    local tmp; tmp="$(mktemp)" && _render "$TPL" >"$tmp" || { rm -f "$tmp"; return 1; }
     sed -i -E "s|^Address *=.*|Address = ${FVPN_ADDR}|" "$tmp"
     sed -i -E "s|^ListenPort *=.*|ListenPort = ${FULL_PORT}|" "$tmp"
    mv -f -- "$tmp" /etc/wireguard/rzans_fvpn_main.conf
@@ -2916,14 +2928,14 @@ case "${1:-}" in
     DEFER_RESTARTS=1 _with_lock agh_allowed_clients "$@"
     # Если реально были изменения и AGH включён — мягко обновим уже БЕЗ лока
     if (( AGH_ALLOWED_CHANGED )) && [[ "$(yaml_bool 'adguard_home.enable')" == y ]]; then
-      _settings__svc try-reload-or-restart AdGuardHome || true
+      _settings__svc try-reload-or-restart AdGuardHome.service || true
     fi
     exit 0 ;;
   --agh-sync)          shift;
     # Держим единое правило: никаких рестартов «под» локом.
     DEFER_RESTARTS=1 _with_lock agh_allowed_clients "$@"
     if (( AGH_ALLOWED_CHANGED )) && [[ "$(yaml_bool 'adguard_home.enable')" == y ]]; then
-      _settings__svc try-reload-or-restart AdGuardHome || true
+      _settings__svc try-reload-or-restart AdGuardHome.service || true
     fi
     exit 0 ;;
   --endpoint-host)     shift;
