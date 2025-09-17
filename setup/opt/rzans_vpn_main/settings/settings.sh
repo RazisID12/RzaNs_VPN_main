@@ -1238,15 +1238,15 @@ settings_heal() {
     fi
     # ② Оверлей в копию defaults IN-PLACE (без -P): сохраняем комментарии/порядок.
     PJSON="$P" VAL="$VSET" yq e -i '
-      (env(VAL)   | (try fromjson catch null)) as $val
-      | (env(PJSON) | (try fromjson catch [])) as $path
+      (env(VAL)   | from_yaml) as $val
+      | (env(PJSON) | from_yaml) as $path
       | if $val == null then . else setpath($path; $val) end
     ' "$DST"
     # ① Параллельно наполняем «очищенный» файл (только перенесённые значения)
     local tmp2; tmp2="$(mktemp)"
     PJSON="$P" VAL="$VSET" yq e -P '
-      (env(VAL)   | (try fromjson catch null)) as $val
-      | (env(PJSON) | (try fromjson catch [])) as $path
+      (env(VAL)   | from_yaml) as $val
+      | (env(PJSON) | from_yaml) as $path
       | if $val == null then . else setpath($path; $val) end
     ' "$CLEAN_TMP" >"$tmp2" && mv -f -- "$tmp2" "$CLEAN_TMP"
   done
@@ -1595,7 +1595,7 @@ yaml_set() {
   KEY="$key" VAL="$val" \
   yq e -P 'setpath(
              (env(KEY) | split("."));
-             (env(VAL) | (try from_yaml catch null))
+             (env(VAL) | from_yaml)
            )' \
     "$SETTINGS_YAML" >"$TMP" \
     || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
@@ -2336,10 +2336,11 @@ agh_heal() {
       VAL="$(__get_json_at "$MERGE_TMP" "$PJSON" 2>/dev/null || echo 'null')"
       tmp2="$(mktemp)"
       P="$PJSON" V="$VAL" \
-        yq e -P 'setpath(
-                   (env(P) | (try fromjson catch []));
-                   (env(V) | (try fromjson catch null))
-                 )' "$GEN_TMP" >"$tmp2" \
+        yq e -P '
+          (env(P) | from_yaml) as $p
+          | (env(V) | from_yaml) as $v
+          | if $v == null then . else setpath($p; $v) end
+        ' "$GEN_TMP" >"$tmp2" \
         || { rm -f "$tmp2"; continue; }
       mv -f -- "$tmp2" "$GEN_TMP"
     done
