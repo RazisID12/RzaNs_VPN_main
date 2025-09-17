@@ -32,6 +32,14 @@ if ! "$YQ_BIN" --version 2>/dev/null | grep -Eq '\bv?4(\.|$)'; then
 fi
 yq() { command "$YQ_BIN" "$@"; }
 
+# ── pin jq 1.6+ ──────────────────────────────────────────────────────────────
+: "${JQ_BIN:=/usr/bin/jq}"
+if ! "$JQ_BIN" --version 2>/dev/null | grep -Eq 'jq-1\.(6|[7-9])'; then
+  echo "ERROR: need jq 1.6+ (for path enumeration)" >&2
+  exit 91
+fi
+jq() { command "$JQ_BIN" "$@"; }
+
 # ── DNS addresses (как в up.sh) ───────────────────────────────────
 # IP’ы локальных сервисов и общий DNS-порт (новая схема)
 
@@ -874,16 +882,19 @@ switch_system_resolve() {
 # ── YAML helpers (defaults * settings) ───────────────────────────
 _yaml_merged() {
   _have yq || { echo "ERROR: yq not found" >&2; return 1; }
-  local files=()
+  local files=() valid=() f
   [[ -s "$DEFAULTS_YAML"  ]] && files+=("$DEFAULTS_YAML")
   [[ -s "$SETTINGS_YAML"  ]] && files+=("$SETTINGS_YAML")
-  [[ ${#files[@]} -eq 0 ]] && { echo "{}"; return 0; }
-  # глубокий мердж двух документов: правее имеет приоритет
-  if [[ ${#files[@]} -eq 1 ]]; then
-    cat "${files[0]}"
+  # отфильтруем невалидные YAML, чтобы не ронять yq
+  for f in "${files[@]}"; do
+    yq e '.' "$f" >/dev/null 2>&1 && valid+=("$f")
+  done
+  [[ ${#valid[@]} -eq 0 ]] && { echo "{}"; return 0; }
+  # глубокий мердж документов: правее имеет приоритет
+  if [[ ${#valid[@]} -eq 1 ]]; then
+    cat "${valid[0]}"
   else
-    # корректный мердж для любого числа файлов
-    yq ea -P '. as $item ireduce ({}; . * $item)' "${files[@]}"
+    yq ea -P '. as $item ireduce ({}; . * $item)' "${valid[@]}"
   fi
 }
 
@@ -973,23 +984,40 @@ __is_domain() {
 __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 
 # == JSON-path utils ==
-__pjson_to_dot() {
-  # Вход должен быть JSON-массивом пути. Если прилетела строка — вернуть как есть.
+__pjson_to_dot() { # JSON-массив пути → dot-строка (или уже dot-строка)
   case "$1" in
-    \[*\])  printf '%s' "$1" | yq e -r 'fromjson | map(tostring) | join(".")' - ;;
-    *)      printf '%s\n' "$1" ;;
+    \[*\])
+      # На вход уже приходит JSON-массив; не парсим строкой, а передаём как argjson.
+      jq -nr --argjson P "$1" '$P | map(tostring) | join(".")'
+      ;;
+    *)
+      printf '%s\n' "$1"
+      ;;
   esac
 }
-__get_json_at()    { P="$2" yq e -o=json -I=0 'getpath(env(P)|fromjson)' "$1" 2>/dev/null; }
-__type_at()        { P="$2" yq e -r 'type(getpath(env(P)|fromjson))'     "$1" 2>/dev/null; }
+__get_json_at()    { local P="$2"; yq e -o=json -I=0 '.' "$1" | jq -c --argjson P "$P" 'getpath($P)' 2>/dev/null; }
+__type_at()        {
+  local P="$2"
+  yq e -o=json -I=0 '.' "$1" \
+  | jq -r --argjson P "$P" '
+      (getpath($P) | type) as $t
+      | if   $t=="string"  then "!!str"
+        elif $t=="number"  then "!!int"
+        elif $t=="boolean" then "!!bool"
+        elif $t=="array"   then "!!seq"
+        elif $t=="object"  then "!!map"
+        else $t end
+    ' 2>/dev/null
+}
 
 # Пути только по map-ключам (форма файла, без индексов массивов)
-__map_value_paths() {
-  yq e -r '
-    path(..) as $p
-    | select( ($p[-1] | type) == "string" )
-    | $p | map(tostring) | join(".")' "$1" \
-    | LC_ALL=C sort -u
+__map_value_paths() { # печатает dot-пути ТОЛЬКО по map-ключам
+  # YAML → JSON → jq paths → dotted
+  yq e -o=json -I=0 '.' "$1" \
+  | jq -r 'paths
+           | select((.[-1]|type)=="string")
+           | join(".")' \
+  | LC_ALL=C sort -u
 }
 
 # == Персональная проверка значения по ключу (JSON-представление) ==
@@ -1015,7 +1043,7 @@ __kv_valid() {
   fi
 
   # routing.* — строгие булевы
-  if [[ "$key" == routing.route_all || "$key" == routing.flags.* || "$key" =~ ^routing\.flags\. ]]; then
+  if [[ "$key" == routing.route_all || "$key" == routing.flags.* ]]; then
     __is_boolish_json "$vjson"; return $?
   fi
 
@@ -1129,10 +1157,10 @@ __settings_need_heal() {
   [[ -n "$miss" ]] && return 0
 
   # Валидация значений для всех ключей схемы (кроме автозаполняемых)
-  mapfile -t _paths < <(yq e -o=json -I=0 '
-    path(..) as $p
-    | select( ($p[-1] | type) == "string" )
-    | $p' "$D")
+  mapfile -t _paths < <(
+    yq e -o=json -I=0 '.' "$D" \
+    | jq -c 'paths | select((.[-1]|type)=="string")'
+  )
   local P TDEF V key
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
@@ -1170,10 +1198,10 @@ settings_heal() {
   # Пересборка: копия defaults + перенос валидных значений из текущего
   local DST tmp P TDEF V key
   DST="$(mktemp)"; cp -f "$D" "$DST"
-  mapfile -t _paths < <(yq e -o=json -I=0 '
-    path(..) as $p
-    | select( ($p[-1] | type) == "string" )
-    | $p' "$D")
+  mapfile -t _paths < <(
+    yq e -o=json -I=0 '.' "$D" \
+    | jq -c 'paths | select((.[-1]|type)=="string")'
+  )
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
     TDEF="$(__type_at "$D" "$P")"
@@ -1187,8 +1215,8 @@ settings_heal() {
     tmp="$(mktemp)"
     PJSON="$P" VAL="$VSET" \
       yq e -P 'setpath(
-                 env(PJSON)|fromjson;
-                 (env(VAL)|fromjson)
+                 (env(PJSON) | fromjson? // []);
+                 (env(VAL)   | fromjson? // null)
                )' "$DST" >"$tmp" \
       && mv -f -- "$tmp" "$DST" || rm -f "$tmp"
   done
@@ -1290,7 +1318,7 @@ yaml_bool() {
     expr+='["'"$seg"'"]'
   done
   # Универсально для любых версий v4: берём значение или «__absent__», даже если путь отсутствует
-  raw="$(_yaml_merged | yq e -r "${expr} // \"__absent__\"" - 2>/dev/null || echo "__absent__")"
+  raw="$(_yaml_merged 2>/dev/null | yq e -r "${expr} // \"__absent__\"" - || echo '"__absent__"')"
   case "${raw,,}" in
     true|yes|y|1|on|enable|enabled)        echo y ;;
     false|no|n|0|off|disable|disabled)     echo n ;;
@@ -1319,8 +1347,10 @@ yaml_allow_all() {
 _yaml_adopt_one() { # $1=allowip.ipv4|allowip.ipv6  $2=cidr
   local key="$1" cidr="$2" TMP; TMP="$(mktemp)"
   KEY="$key" CIDR="$cidr" \
-  yq e -P 'setpath( env(KEY)|split("."); ((. // []) + [env(CIDR)]) | unique )' \
-     "$SETTINGS_YAML" >"$TMP" || { rm -f "$TMP"; return 0; }
+  yq e -P '
+    def p: (env(KEY) | split("."));
+    setpath(p; ((getpath(p) // []) + [env(CIDR)]) | unique)
+  ' "$SETTINGS_YAML" >"$TMP" || { rm -f "$TMP"; return 0; }
   _write_if_changed "$SETTINGS_YAML" "$TMP" yaml || true
 }
 
@@ -1533,7 +1563,10 @@ yaml_set() {
 
   local TMP; TMP="$(mktemp)"
   KEY="$key" VAL="$val" \
-  yq e -P 'setpath( env(KEY)|split("."); (env(VAL)|from_yaml) )' \
+  yq e -P 'setpath(
+             (env(KEY) | split("."));
+             (env(VAL) | from_yaml? // null)
+           )' \
     "$SETTINGS_YAML" >"$TMP" \
     || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
   local _ch=0
@@ -2250,33 +2283,33 @@ agh_heal() {
   # ── 3. merge → GEN_TMP, запись только при изменении ─────────────────
   # 3. Сначала готовим MERGE (без комментариев): base * patch * existing?
   local MERGE_TMP; MERGE_TMP="$(mktemp)"
-  if [[ -s $AGH_YAML ]]; then
-    yq ea -P '. as $item ireduce ({}; . * $item)' \
-      "$AGH_TMPL_BASE" "$PTMP" "$AGH_YAML" >"$MERGE_TMP"
-  else
-    yq ea -P '. as $item ireduce ({}; . * $item)' \
-      "$AGH_TMPL_BASE" "$PTMP" >"$MERGE_TMP"
-  fi
+  # безопасная подстановка документов: невалидные → {}
+  safe_doc(){ local f="$1"; yq e '.' "$f" >/dev/null 2>&1 && cat "$f" || echo "{}"; }
+  yq ea -P '. as $item ireduce ({}; . * $item)' \
+    <(safe_doc "$AGH_TMPL_BASE") \
+    <(safe_doc "$PTMP") \
+    <(safe_doc "$AGH_YAML") >"$MERGE_TMP"
   rm -f "$PTMP"
 
   # 5. Комментарии: перенос значений из MERGE поверх копии base (без reduce)
   local GEN_TMP; GEN_TMP="$(mktemp)"; cp -f "$AGH_TMPL_BASE" "$GEN_TMP"
   # Собираем пути-листья из MERGE_TMP
+  # Пути до «листьев» (всё, что не объект) — в JSON-массивной форме
   mapfile -t _paths_merge < <(
-    yq e -o=json -I=0 '
-      path(..) as $p
-      | select( (getpath($p) | type) != "object" )
-      | $p
-    ' "$MERGE_TMP" 2>/dev/null || true
+    yq e -o=json -I=0 '.' "$MERGE_TMP" \
+    | jq -c 'paths | select((getpath(.) | type) != "object")' 2>/dev/null || true
   )
   if ((${#_paths_merge[@]})); then
     local PJSON VAL tmp2
     for PJSON in "${_paths_merge[@]}"; do
-      # значение из MERGE_TMP по этому пути
-      VAL="$(P="$PJSON" yq e -o=json -I=0 'getpath(env(P)|fromjson)' "$MERGE_TMP" 2>/dev/null || echo 'null')"
+      # значение из MERGE_TMP по этому пути (через helper на jq)
+      VAL="$(__get_json_at "$MERGE_TMP" "$PJSON" 2>/dev/null || echo 'null')"
       tmp2="$(mktemp)"
       P="$PJSON" V="$VAL" \
-        yq e -P 'setpath( env(P)|fromjson; (env(V)|fromjson) )' "$GEN_TMP" >"$tmp2" \
+        yq e -P 'setpath(
+                   (env(P) | fromjson? // []);
+                   (env(V) | fromjson? // null)
+                 )' "$GEN_TMP" >"$tmp2" \
         || { rm -f "$tmp2"; continue; }
       mv -f -- "$tmp2" "$GEN_TMP"
     done

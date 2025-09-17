@@ -4,6 +4,7 @@ Description=Fallback rules (idempotent emergency rules when WG fails)
 DefaultDependencies=no
 After=local-fs.target
 Wants=local-fs.target
+RequiresMountsFor=/opt/rzans_vpn_main
 ConditionPathExists=/opt/rzans_vpn_main/firewall/fallback.sh
 
 [Service]
@@ -26,5 +27,3 @@ RestrictSUIDSGID=yes
 LockPersonality=yes
 SystemCallFilter=@system-service @network-io
 
-[Install]
-WantedBy=

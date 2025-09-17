@@ -29,5 +29,3 @@ PrivateTmp=yes
 ProtectSystem=off
 ProtectHome=no
 
-[Install]
-WantedBy=

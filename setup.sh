@@ -566,7 +566,7 @@ SYSTEMD_LOG_LEVEL=err systemctl --no-pager daemon-reload >/dev/null 2>&1 || true
 
 # Ставим необходимые пакеты
 apt_safe install --reinstall -y --no-install-recommends \
-                              git iptables gawk knot-resolver sipcalc python3 python3-pip \
+                              git iptables gawk jq knot-resolver sipcalc python3 python3-pip \
                               wireguard-tools diffutils socat lua-cqueues ipset file \
                               libcap2-bin logrotate gettext-base ca-certificates \
                               acl attr uuid-runtime binutils
