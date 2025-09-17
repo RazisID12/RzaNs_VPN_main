@@ -866,6 +866,7 @@ settings_fix_perms || true
 
 _release_settings_lock 2>/dev/null || true
 sync || true
+rm -f -- "$ANS_YAML" 2>/dev/null || true
 
 # Покажем diff настроек «до → после» (если есть чем сравнить)
 if [[ -s "$TMP_DIR/settings.before.yaml" ]]; then
@@ -884,7 +885,7 @@ echo "DEBUG: SETTINGS_YAML -> $SETTINGS_YAML"
 if [[ -f "$SETTINGS_YAML" ]]; then
   ls -l -- "$SETTINGS_YAML" || true
   echo "DEBUG: head of settings.yaml:"
-  sed -n '1,80p' -- "$SETTINGS_YAML" | sed -n '1,25p' || true
+  sed -n '1,25p' -- "$SETTINGS_YAML" || true
 else
   echo "✗ settings.yaml not found at $SETTINGS_YAML"
 fi
