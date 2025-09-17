@@ -810,19 +810,59 @@ fi
 : "${TELEGRAM_INCLUDE:=n}"; : "${GOOGLE_INCLUDE:=n}"
 : "${AKAMAI_INCLUDE:=n}"
 
+# y/n → true/false (для YAML)
+yn2bool() {
+  case "${1,,}" in
+    y|yes|true|1|on|enable|enabled)  echo true ;;
+    *)                               echo false ;;
+  esac
+}
+
+# Сформировать overlay YAML из ответов установщика
+make_answers_yaml() {
+  local _domain="${SERVER_HOST:-}"
+  [[ -z "$_domain" ]] && _domain="auto"
+  cat <<EOF
+dns:
+  upstream: "${DNS_UPSTREAM}"
+
+adguard_home:
+  enable: $(yn2bool "$ADGUARD_HOME")
+
+fail2ban:
+  enable: $(yn2bool "$SSH_PROTECTION")
+
+server:
+  domain: "${_domain}"
+
+routing:
+  route_all: $(yn2bool "$ROUTE_ALL")
+  flags:
+    discord:      $(yn2bool "$DISCORD_INCLUDE")
+    cloudflare:   $(yn2bool "$CLOUDFLARE_INCLUDE")
+    amazon:       $(yn2bool "$AMAZON_INCLUDE")
+    hetzner:      $(yn2bool "$HETZNER_INCLUDE")
+    digitalocean: $(yn2bool "$DIGITALOCEAN_INCLUDE")
+    ovh:          $(yn2bool "$OVH_INCLUDE")
+    telegram:     $(yn2bool "$TELEGRAM_INCLUDE")
+    google:       $(yn2bool "$GOOGLE_INCLUDE")
+    akamai:       $(yn2bool "$AKAMAI_INCLUDE")
+EOF
+}
+
 # Атомарная запись под локом (yaml_set сам умеет брать лок, внешний — для партии)
 _ensure_settings_lock 2>/dev/null || true
 
-yaml_set_str  'dns.upstream'            "$DNS_UPSTREAM"
-yaml_set_bool 'adguard_home.enable'     "$ADGUARD_HOME"
-yaml_set_bool 'fail2ban.enable'         "$SSH_PROTECTION"
-yaml_set_str  'server.domain'           "${SERVER_HOST:-auto}"
-yaml_set_bool 'routing.route_all'       "$ROUTE_ALL"
+ANS_YAML="${TMP_DIR}/answers.yaml"
+make_answers_yaml > "$ANS_YAML"
 
-for k in discord cloudflare amazon hetzner digitalocean ovh telegram google akamai; do
-  vname="$(tr '[:lower:]' '[:upper:]' <<<"$k")_INCLUDE"
-  yaml_set_bool "routing.flags.$k" "${!vname}"
-done
+# Глубокий merge: settings := settings * answers
+yq ea -i 'select(fileIndex==0) * select(fileIndex==1)' \
+  "$SETTINGS_YAML" "$ANS_YAML" \
+  || { echo "✗ failed to merge installer answers into $SETTINGS_YAML"; exit 51; }
+
+# Привести права как обычно
+settings_fix_perms || true
 
 _release_settings_lock 2>/dev/null || true
 sync || true
