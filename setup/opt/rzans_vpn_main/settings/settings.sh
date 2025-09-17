@@ -11,6 +11,30 @@ umask 022
 # фиксируем POSIX-локаль, чтобы регэкспы/пробелы в awk/sed вели себя одинаково
 export LC_ALL=C
 
+# -----------------------------------------------------------------------------
+# yq v4 helper:
+# mikefarah/yq не поддерживает --argjson (это jq-флаг).
+# Чтобы аккуратно проставлять любые значения (числа, строки, map/array),
+# теперь пишем значение во временный файл и подставляем через load(env(...)).
+# Это устойчиво к многострочным YAML/JSON и не ловит «Error: EOF».
+# Пример: _yq_apply file '.server.port_ssh = $V' '22'
+#         _yq_apply file '.dns = $V' '{"upstream":"quad9","ipv4":"up://9.9.9.10 | 149.112.112.10"}'
+_yq_apply() {
+  local _file="$1"
+  local _expr="$2"     # выражение вида '.path = $V'
+  local _val="$3"      # значение в YAML/JSON (число/строка/объект/массив)
+  # Подставляем $V через временный файл: load(env(YV_FILE)) — безопасно для многострочных значений.
+  local _tmp
+  _tmp="$(mktemp)" || { echo "tmp create failed for _yq_apply" >&2; return 1; }
+  printf '%s' "$_val" >"$_tmp"
+  local _expr_resolved="${_expr//\$V/(load(env(YV_FILE)))}"
+  YV_FILE="$_tmp" yq e -i "$_expr_resolved" "$_file"
+  local rc=$?
+  rm -f -- "$_tmp"
+  return $rc
+}
+# -----------------------------------------------------------------------------
+
 # ── base paths (для единообразия путей) ───────────────────────────
 : "${BASE_DIR:=/opt/rzans_vpn_main}"
 : "${SETTINGS_DIR:=${BASE_DIR}/settings}"
@@ -1247,12 +1271,11 @@ settings_heal() {
     if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
       VSET="$(__to_json_bool "$V")"
     fi
-    # ② Оверлей в копию defaults IN-PLACE: прямое присваивание по dot-пути.
-    #    Пропускаем null, чтобы не затирать дефолты.
+    # ② Оверлей в копию defaults IN-PLACE через helper (_yq_apply).
+    #    Пропускаем null, чтобы не затирать дефолты и сохраняем тип значения.
     if [[ "$VSET" != "null" ]]; then
       # В DST сохраняются комментарии/порядок из defaults.
-      APPLY_VAL="$VSET" \
-        yq e -i ".${key} = (env(APPLY_VAL) | from_yaml)" "$DST"
+      _yq_apply "$DST" ".${key} = \$V" "$VSET"
     fi
   done
 
@@ -1597,13 +1620,17 @@ yaml_set() {
   fi
 
   local TMP; TMP="$(mktemp)"
-  KEY="$key" VAL="$val" \
-  yq e -P 'setpath(
-             (env(KEY) | split("."));
-             (env(VAL) | from_yaml)
-           )' \
-    "$SETTINGS_YAML" >"$TMP" \
-    || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
+  # Для устойчивости к многострочным значениям используем load() из временного файла.
+  local VALTMP; VALTMP="$(mktemp)" || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
+  printf '%s' "$val" >"$VALTMP"
+  KEY="$key" VALFILE="$VALTMP" \
+    yq e -P 'setpath(
+               (env(KEY) | split("."));
+               (load(env(VALFILE)))
+             )' \
+      "$SETTINGS_YAML" >"$TMP" \
+      || { rm -f "$TMP" "$VALTMP"; (( _acq )) && _release_settings_lock; return 1; }
+  rm -f "$VALTMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
