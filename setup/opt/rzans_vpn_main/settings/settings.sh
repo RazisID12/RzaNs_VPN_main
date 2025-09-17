@@ -1215,8 +1215,8 @@ settings_heal() {
     tmp="$(mktemp)"
     PJSON="$P" VAL="$VSET" \
       yq e -P 'setpath(
-                 (env(PJSON) | fromjson? // []);
-                 (env(VAL)   | fromjson? // null)
+                 (env(PJSON) | (try fromjson catch []));
+                 (env(VAL)   | (try fromjson catch null))
                )' "$DST" >"$tmp" \
       && mv -f -- "$tmp" "$DST" || rm -f "$tmp"
   done
@@ -1565,7 +1565,7 @@ yaml_set() {
   KEY="$key" VAL="$val" \
   yq e -P 'setpath(
              (env(KEY) | split("."));
-             (env(VAL) | from_yaml? // null)
+             (env(VAL) | (try from_yaml catch null))
            )' \
     "$SETTINGS_YAML" >"$TMP" \
     || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
@@ -2307,8 +2307,8 @@ agh_heal() {
       tmp2="$(mktemp)"
       P="$PJSON" V="$VAL" \
         yq e -P 'setpath(
-                   (env(P) | fromjson? // []);
-                   (env(V) | fromjson? // null)
+                   (env(P) | (try fromjson catch []));
+                   (env(V) | (try fromjson catch null))
                  )' "$GEN_TMP" >"$tmp2" \
         || { rm -f "$tmp2"; continue; }
       mv -f -- "$tmp2" "$GEN_TMP"
