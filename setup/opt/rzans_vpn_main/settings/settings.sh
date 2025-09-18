@@ -1353,47 +1353,49 @@ settings_heal() {
     return 0
   fi
 
-  # Оверлей: копия defaults + перенос ТОЛЬКО валидных значений → DST (с комментариями)
+  # База для heal — ТЕКУЩИЙ settings.yaml (сохраняем стиль/комменты пользователя)
   local DST P TDEF V key
-  DST="$(mktemp)"; cp -f "$D" "$DST"
-  # ВАЖНО: переносим ТОЛЬКО СКАЛЯРНЫЕ ЛИСТЬЯ схемы.
-  # Это исключает присваивания вида ".server = {...}" и тем самым
-  # предотвращает flow-стиль и потерю комментариев.
+  DST="$(mktemp)"; cp -f "$S" "$DST"
+
+  # 0) Удалить ключи, которых нет в defaults (игнорируя динамические)
+  local extra
+  extra="$(
+    comm -23 \
+      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
+      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
+    || true
+  )"
+  if [[ -n "$extra" ]]; then
+    while IFS= read -r key; do
+      [[ -n "$key" ]] && _yq_apply "$DST" "del(.$key)"
+    done <<< "$extra"
+  fi
+
+  # 1) По листовым ключам схемы: валидное → перенос/нормализация; иначе → дефолт
   mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
-    # Динамические/косметические ключи НЕ переносим (их выставит косметика/авто-логика)
-    if __is_dynamic_key "$key"; then continue; fi
-
+    __is_dynamic_key "$key" && continue
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
-    # Нормализация типов перед валидацией:
-    #  - для !!int разрешаем строковые числа из settings.yaml (\"22\" → 22)
-    if [[ "$TDEF" == "!!int" && "$V" =~ ^\"-?[0-9]+\"$ ]]; then
-      V="${V:1:${#V}-2}"
-    fi
-    # Пропускаем невалидные/отсутствующие — останутся дефолты
-    __kv_valid "$key" "$V" "$TDEF" || continue
-    # Булевы, заданные «y/n/yes/no/1/0/on/off», приводим к строгому true/false
-    local VSET="$V"
-    if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
-      VSET="$(__to_json_bool "$V")"
-    fi
-    # Нормализация server.domain до голого хоста
-    if [[ "$key" == "server.domain" ]]; then
-      if [[ "$V" != null && "$V" != '"__absent__"' && "${V,,}" != '"auto"' ]]; then
-        local host; host="$(__extract_host_from_urlish "$V")"
-        VSET="\"$host\""
+    # строковый int → int
+    [[ "$TDEF" == "!!int" && "$V" =~ ^\"-?[0-9]+\"$ ]] && V="${V:1:${#V}-2}"
+    if __kv_valid "$key" "$V" "$TDEF"; then
+      local VSET="$V"
+      # boolish → строгий JSON-bool
+      [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V" && VSET="$(__to_json_bool "$V")"
+      # server.domain: urlish → голый хост
+      if [[ "$key" == "server.domain" && "$V" != null && "$V" != '"__absent__"' && "${V,,}" != '"auto"' ]]; then
+        local host; host="$(__extract_host_from_urlish "$V")"; VSET="\"$host\""
       fi
+      [[ "$VSET" != "null" ]] && _yq_apply "$DST" ".${key} = \$V" "$VSET"
+    else
+      # невалидно/отсутствует → дефолт
+      _yq_apply "$DST" ".${key} = \$V" "$(__get_json_at "$D" "$P")"
     fi
-    # Оверлей в копию defaults IN-PLACE через helper (_yq_apply).
-    # Пропускаем null, чтобы не затирать дефолты и сохраняем тип значения.
-    [[ "$VSET" == "null" ]] && continue
-    # В DST сохраняются комментарии/порядок из defaults; set только скаляров.
-    _yq_apply "$DST" ".${key} = \$V" "$VSET"
   done
 
-  # Доп. канонизация: allowip.* если были заданы строкой → превратить в массив
+  # 2) Доп. канонизация: allowip.* если были заданы строкой → массив
   local VAI
   VAI="$(__get_json_at "$S" '["allowip","ipv4"]')"
   if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
@@ -1511,33 +1513,20 @@ yaml_bool() {
 }
 
 yaml_allow_all() {
-  # null→[], строка "a b  c"→["a","b","c"], массив «как есть»; dedup прямо в yq
+  # null→[], "a b  c"→["a","b","c"], массив «как есть»; dedup прямо в yq
   _yaml_merged | yq e -r '
-    # .allowip.ipv4 → $A
-    ( .allowip.ipv4 // [] |
-      if tag == "!!null" then []
-      elif tag == "!!str" then
-        . | gsub("[[:space:]]+"; " ")
+    def to_seq(x):
+      if x == null then []
+      elif (x|type) == "string" then
+        x | gsub("[[:space:]]+"; " ")
           | sub("^ "; "")
           | sub(" $"; "")
           | split(" ")
-      elif tag == "!!seq" then .
-      else [ . ]
-      end
-    ) as $A |
-    # .allowip.ipv6 → $B
-    ( .allowip.ipv6 // [] |
-      if tag == "!!null" then []
-      elif tag == "!!str" then
-        . | gsub("[[:space:]]+"; " ")
-          | sub("^ "; "")
-          | sub(" $"; "")
-          | split(" ")
-      elif tag == "!!seq" then .
-      else [ . ]
-      end
-    ) as $B |
-    ( $A + $B )
+      elif (x|type) == "array" then x
+      else [x] end;
+    to_seq(.allowip.ipv4) as $A |
+    to_seq(.allowip.ipv6) as $B |
+    ($A + $B)
       | map(select(. != null and . != "auto"))
       | map(sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; ""))
       | map(select(. != ""))
