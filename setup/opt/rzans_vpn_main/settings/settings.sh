@@ -924,11 +924,10 @@ _yaml_merged() {
 }
 
 ## ───────────────────────────────────────────────────────────────────────────
-## STRICT VALIDATION of settings.yaml + HEAL ONLY WHEN NEEDED
-##  • Держим канон формы/комментариев из defaults;
-##  • Если значения валидны — ничего не трогаем;
-##  • Если есть мусор/лишние ключи/битые значения — берём defaults и
-##    накладываем ТОЛЬКО валидные значения из текущего.
+## STRICT VALIDATION of settings.yaml + FULL REBUILD
+##  • Собираем settings.yaml ЦЕЛИКОМ из defaults, накладывая
+##    ТОЛЬКО валидные скалярные значения из текущего файла.
+##  • Контейнеры (map/seq) не копируем целиком — не ломаем стиль/комментарии.
 ## ───────────────────────────────────────────────────────────────────────────
 
 # == Примитивные валидаторы ==
@@ -1119,8 +1118,10 @@ __kv_valid() {
   fi
 
   # routing.* — строгие булевы
-  if [[ "$key" == "routing.route_all" || "$key" == "routing.flags" ]]; then
-    __is_boolish_json "$vjson"; return $?
+  # листья вида routing.flags.telegram / routing.flags.discord / ...
+  if [[ "$key" == "routing.route_all" || "$key" == routing.flags.* ]]; then
+    __is_boolish_json "$vjson"
+    return $?
   fi
 
   case "$key" in
@@ -1222,6 +1223,7 @@ __kv_valid() {
       ;;
     fail2ban.enable|adguard_home.enable)
       __is_boolish_json "$vjson"
+      return $?
       ;;
     *)
       # Строгая проверка соответствия типов значению из settings
@@ -1241,161 +1243,69 @@ __kv_valid() {
   esac
 }
 
-# == Нужно ли лечить файл? (heal only when needed) ==
-__settings_need_heal() {
-  local S="$SETTINGS_YAML" D="$DEFAULTS_YAML"
-  [[ -s "$S" ]] || return 0
-  yq e '.' "$S" >/dev/null 2>&1 || return 0
-
-  # Лишние ключи? (игнорируем динамические/косметические)
-  local extra
-  extra="$(
-    comm -23 \
-      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
-      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
-    || true
-  )"
-  [[ -n "$extra" ]] && return 0
-
-  # Отсутствующие ключи? (игнорируем динамические/косметические)
-  local miss
-  miss="$(
-    comm -13 \
-      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
-      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
-    || true
-  )"
-  [[ -n "$miss" ]] && return 0
-
-  # Валидация значений для всех ключей схемы (кроме автозаполняемых)
-  # ВАЖНО: проверяем только ЛИСТЬЯ-СКАЛЯРЫ.
-  # Контейнеры (map/seq) не валидируются и не переносятся «целиком»,
-  # чтобы не терять блоковый стиль и комментарии.
-  mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
-  local P TDEF V key
-  for P in "${_paths[@]}"; do
-  # P — JSON-массив пути (jq paths), TDEF — тип в дефолте, V — значение в текущем S.
-    key="$(__pjson_to_dot "$P")"
-    # Динамические/косметические ключи НЕ считаем отклонением — пропускаем
-    if __is_dynamic_key "$key"; then continue; fi
-
-    TDEF="$(__type_at "$D" "$P")"
-    V="$(__get_json_at "$S" "$P")"
-    # Дополнительные триггеры на хил по «битому» типу:
-    #  - если в defaults ожидается boolean, а в settings лежит НЕ bool и НЕ «boolish» строка;
-    #  - если ожидается int, а в settings лежит НЕ число и НЕ строковое число.
-    if [[ "$TDEF" == "!!bool" ]]; then
-      local CURT; CURT="$(__type_at "$S" "$P")"
-      if [[ "$CURT" != "!!bool" ]] && ! __is_boolish_json "$V"; then
-        return 0
-      fi
-    fi
-    if [[ "$TDEF" == "!!int" ]]; then
-      local CURT; CURT="$(__type_at "$S" "$P")"
-      if [[ "$CURT" != "!!int" ]] && [[ ! "$V" =~ ^\"-?[0-9]+\"$ ]]; then
-        return 0
-      fi
-    fi
-
-    # Миграция: если по схеме ожидается boolean, а в файле лежит «y/n/yes/no/...»
-    # (то есть это boolish-строка, НЕ строгий JSON-bool) — нужно лечить.
-    if [[ "$TDEF" == "!!bool" ]]; then
-      if __is_boolish_json "$V" && ! __is_bool_json "$V"; then
-        return 0
-      fi
-    fi
-
-    __kv_valid "$key" "$V" "$TDEF" || return 0
-  done
-
-  # Доп. кейсы канонизации, требующие heal даже при «валидно»:
-  # 1) server.domain: urlish → нужно нормализовать до голого хоста
-  local _dom; _dom="$(__get_json_at "$S" '["server","domain"]')"
-  if [[ "$_dom" == \"*\" && "${_dom,,}" != '"auto"' ]]; then
-    local host; host="$(__extract_host_from_urlish "$_dom")"
-    [[ "\"$host\"" != "$_dom" ]] && return 0
-  fi
-  # 2) allowip.*: строка с адресами → нормализовать в массив
-  local _t v
-  _t="$(__type_at "$S" '["allowip","ipv4"]')"
-  if [[ "$_t" == "!!str" ]]; then
-    v="$(__get_json_at "$S" '["allowip","ipv4"]')"
-    [[ "${v,,}" != '"auto"' && "$v" != '""' ]] && return 0
-  fi
-  _t="$(__type_at "$S" '["allowip","ipv6"]')"
-  if [[ "$_t" == "!!str" ]]; then
-    v="$(__get_json_at "$S" '["allowip","ipv6"]')"
-    [[ "${v,,}" != '"auto"' && "$v" != '""' ]] && return 0
-  fi
-  return 1  # всё валидно → heal не нужен
-}
-
-# == Heal: defaults + overlay только валидных текущих значений ==
+# == Полная сборка settings.yaml из шаблона с наложением валидных значений ==
 settings_heal() {
   local S="$SETTINGS_YAML" D="$DEFAULTS_YAML"
   [[ -s "$D" ]] || { echo "ERROR: defaults not found: $D" >&2; return 1; }
 
-  # Файл отсутствует/пуст/битый YAML → берём дефолт (и сохраняем бэкап битого)
+  # Если настроек нет — просто положим шаблон и выйдем.
   if [[ ! -s "$S" ]]; then
     install -D -m600 "$D" "$S"
     settings_fix_perms || true
     return 0
   fi
+  # Если пользовательский YAML битый — сохраним бэкап и соберём чисто по шаблону.
   if ! yq e '.' "$S" >/dev/null 2>&1; then
     cp -f -- "$S" "${S}.broken.$(date +%s)" 2>/dev/null || true
-    cp -f -- "$D" "$S"
+    install -D -m600 "$D" "$S"
     settings_fix_perms || true
     return 0
   fi
 
-  # Heal запускаем ТОЛЬКО при необходимости (валидность/канонизация).
-  if ! __settings_need_heal; then
-    return 0
-  fi
+  # БАЗА — defaults; поверх него накладываем ТОЛЬКО валидные скаляры из S.
+  local DST; DST="$(mktemp)"; cp -f "$D" "$DST"
 
-  # База для heal — ТЕКУЩИЙ settings.yaml (сохраняем стиль/комменты пользователя)
-  local DST P TDEF V key
-  DST="$(mktemp)"; cp -f "$S" "$DST"
-
-  # 0) Удалить ключи, которых нет в defaults (игнорируя динамические)
-  local extra
-  extra="$(
-    comm -23 \
-      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
-      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
-    || true
-  )"
-  if [[ -n "$extra" ]]; then
-    while IFS= read -r key; do
-      [[ -n "$key" ]] && _yq_apply "$DST" "del(.$key)"
-    done <<< "$extra"
-  fi
-
-  # 1) По листовым ключам схемы: валидное → перенос/нормализация; иначе → дефолт
+  # Проходим только по листьям-скалярам схемы defaults.
   mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
+  local P key TDEF V VD VOUT CUR
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
     __is_dynamic_key "$key" && continue
     TDEF="$(__type_at "$D" "$P")"
-    V="$(__get_json_at "$S" "$P")"
-    # строковый int → int
-    [[ "$TDEF" == "!!int" && "$V" =~ ^\"-?[0-9]+\"$ ]] && V="${V:1:${#V}-2}"
+    V="$(__get_json_at "$S" "$P")"   # из текущего S
+    VD="$(__get_json_at "$D" "$P")"  # дефолт из D
+
+    # Нормализация под ожидаемый тип: строковый int → int
+    if [[ "$TDEF" == "!!int" && "$V" =~ ^\"-?[0-9]+\"$ ]]; then
+      V="${V:1:${#V}-2}"
+    fi
+
     if __kv_valid "$key" "$V" "$TDEF"; then
-      local VSET="$V"
+      VOUT="$V"
       # boolish → строгий JSON-bool
-      [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V" && VSET="$(__to_json_bool "$V")"
+      if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
+        VOUT="$(__to_json_bool "$V")"
+      fi
       # server.domain: urlish → голый хост
       if [[ "$key" == "server.domain" && "$V" != null && "$V" != '"__absent__"' && "${V,,}" != '"auto"' ]]; then
-        local host; host="$(__extract_host_from_urlish "$V")"; VSET="\"$host\""
+        local host; host="$(__extract_host_from_urlish "$V")"
+        VOUT="\"$host\""
       fi
-      [[ "$VSET" != "null" ]] && _yq_apply "$DST" ".${key} = \$V" "$VSET"
     else
-      # невалидно/отсутствует → дефолт
-      _yq_apply "$DST" ".${key} = \$V" "$(__get_json_at "$D" "$P")"
+      VOUT="$VD"
+    fi
+
+    CUR="$(__get_json_at "$DST" "$P")"
+    [[ "$CUR" == "$VOUT" ]] && continue
+    if [[ "$TDEF" == "!!str" && "$VOUT" =~ ^\".*\"$ ]]; then
+      local _plain="${VOUT:1:${#VOUT}-2}"
+      _yq_apply "$DST" ".${key} = \$V" "$_plain"
+    else
+      _yq_apply "$DST" ".${key} = \$V" "$VOUT"
     fi
   done
 
-  # 2) Доп. канонизация: allowip.* если были заданы строкой → массив
+  # Доп. канонизация: allowip.* строка → массив токенов
   local VAI
   VAI="$(__get_json_at "$S" '["allowip","ipv4"]')"
   if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
@@ -1410,6 +1320,7 @@ settings_heal() {
   if _write_if_changed "$S" "$DST" yaml; then _ch=1; fi
   rm -f "$DST"
   (( _ch == 1 )) && settings_fix_perms || true
+  return 0
 }
 
 # yaml_get <key> [default]
@@ -1513,26 +1424,30 @@ yaml_bool() {
 }
 
 yaml_allow_all() {
-  # null→[], "a b  c"→["a","b","c"], массив «как есть»; dedup прямо в yq
-  _yaml_merged | yq e -r '
-    def to_seq(x):
-      if x == null then []
-      elif (x|type) == "string" then
-        x | gsub("[[:space:]]+"; " ")
-          | sub("^ "; "")
-          | sub(" $"; "")
-          | split(" ")
-      elif (x|type) == "array" then x
-      else [x] end;
-    to_seq(.allowip.ipv4) as $A |
-    to_seq(.allowip.ipv6) as $B |
-    ($A + $B)
-      | map(select(. != null and . != "auto"))
-      | map(sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; ""))
-      | map(select(. != ""))
-      | unique
-      | .[]
-  ' - || true
+  # null→[], "a b  c"→["a","b","c"], массив «как есть»; dedup делаем в jq.
+  # Переводим YAML→JSON через yq, дальше вся логика в jq (устойчиво к многострочным def).
+  _yaml_merged \
+  | yq e -o=json -I=0 '.' - \
+  | jq -r '
+      def to_seq(x):
+        if x == null then []
+        elif (x|type) == "string" then
+          x | gsub("[[:space:]]+"; " ")
+            | sub("^ "; "")
+            | sub(" $"; "")
+            | split(" ")
+        elif (x|type) == "array" then x
+        else [x] end;
+      to_seq(.allowip.ipv4) as $A |
+      to_seq(.allowip.ipv6) as $B |
+      ($A + $B)
+        | map(select(. != null and . != "auto"))
+        | map(sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; ""))
+        | map(select(. != ""))
+        | unique
+        | .[]
+    ' \
+  || true
 }
 
 # ── Allow-лист: перенесено из sync.sh (единая реализация) ──────────────────
