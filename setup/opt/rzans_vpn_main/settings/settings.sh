@@ -738,15 +738,14 @@ agh_allowed_clients() {
   FVPN_NET4="$(yaml_get 'vpn.nets.full'  '10.28.8.0/24')"
 
   local TMP; TMP="$(mktemp)"
-  cp -f "$AGH_YAML" "$TMP"
   SVPN="$SVPN_NET4" FVPN="$FVPN_NET4" \
-  yq e -i '
+  yq e -P '
     .dns.allowed_clients = (
       [env(SVPN), env(FVPN)]
       | map(select(. != null and . != ""))
       | unique | sort
     )
-  ' "$TMP" || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
+  ' "$AGH_YAML" >"$TMP" || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
 
   local _changed=0
   if _write_if_changed "$AGH_YAML" "$TMP" yaml; then _changed=1; fi
@@ -1181,16 +1180,15 @@ __kv_valid() {
     *)
       # Строгая проверка соответствия типов значению из settings
       case "$tdef" in
-        # Контейнеры не переносятся «целиком» при heal — так сохраняем блоковый стиль и комментарии.
-        # Исключения (allowip.*, snat) обрабатываются выше отдельными кейсами.
-        "!!map")  return 1 ;;
-        "!!seq")  return 1 ;;
         "!!str")
           [[ "$vjson" == \"*\"      ]] || return 1 ;;
         "!!int")
           [[ "$vjson" =~ ^-?[0-9]+$ ]] || return 1 ;;
-        "!!bool")
-          __is_boolish_json "$vjson" || return 1 ;;
+        "!!seq")
+          [[ "$vjson" == \[*\]      ]] || return 1 ;;
+        "!!map")
+          [[ "$vjson" == \{*\}      ]] || return 1 ;;
+        "!!bool") __is_boolish_json "$vjson" || return 1 ;;
         *) return 1 ;;
       esac ;;
   esac
@@ -1213,13 +1211,12 @@ __settings_need_heal() {
   [[ -n "$miss" ]] && return 0
 
   # Валидация значений для всех ключей схемы (кроме автозаполняемых)
-  # ВАЖНО: проверяем только ЛИСТЬЯ-СКАЛЯРЫ.
-  # Контейнеры (map/seq) не валидируются и не переносятся «целиком»,
-  # чтобы не терять блоковый стиль и комментарии.
-  mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
+  mapfile -t _paths < <(
+    yq e -o=json -I=0 '.' "$D" \
+    | jq -c 'paths | select((.[-1]|type)=="string")'
+  )
   local P TDEF V key
   for P in "${_paths[@]}"; do
-  # P — JSON-массив пути (jq paths), TDEF — тип в дефолте, V — значение в текущем S.
     key="$(__pjson_to_dot "$P")"
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
@@ -1260,10 +1257,10 @@ settings_heal() {
   # Оверлей: копия defaults + перенос ТОЛЬКО валидных значений → DST (с комментариями)
   local DST P TDEF V key
   DST="$(mktemp)"; cp -f "$D" "$DST"
-  # ВАЖНО: переносим ТОЛЬКО СКАЛЯРНЫЕ ЛИСТЬЯ схемы.
-  # Это исключает присваивания вида ".server = {...}" и тем самым
-  # предотвращает flow-стиль и потерю комментариев.
-  mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
+  mapfile -t _paths < <(
+    yq e -o=json -I=0 '.' "$D" \
+    | jq -c 'paths | select((.[-1]|type)=="string")'
+  )
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
     TDEF="$(__type_at "$D" "$P")"
@@ -1277,7 +1274,7 @@ settings_heal() {
     # ② Оверлей в копию defaults IN-PLACE через helper (_yq_apply).
     #    Пропускаем null, чтобы не затирать дефолты и сохраняем тип значения.
     if [[ "$VSET" != "null" ]]; then
-      # В DST сохраняются комментарии/порядок из defaults; set только скаляров.
+      # В DST сохраняются комментарии/порядок из defaults.
       _yq_apply "$DST" ".${key} = \$V" "$VSET"
     fi
   done
@@ -1407,12 +1404,11 @@ yaml_allow_all() {
 # ── Allow-лист: перенесено из sync.sh (единая реализация) ──────────────────
 _yaml_adopt_one() { # $1=allowip.ipv4|allowip.ipv6  $2=cidr
   local key="$1" cidr="$2" TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   KEY="$key" CIDR="$cidr" \
-  yq e -i '
+  yq e -P '
     def p: (env(KEY) | split("."));
     setpath(p; ((getpath(p) // []) + [env(CIDR)]) | unique)
-  ' "$TMP" || { rm -f "$TMP"; return 0; }
+  ' "$SETTINGS_YAML" >"$TMP" || { rm -f "$TMP"; return 0; }
   _write_if_changed "$SETTINGS_YAML" "$TMP" yaml || true
 }
 
@@ -1624,16 +1620,15 @@ yaml_set() {
   fi
 
   local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   # Для устойчивости к многострочным значениям используем load() из временного файла.
   local VALTMP; VALTMP="$(mktemp)" || { rm -f "$TMP"; (( _acq )) && _release_settings_lock; return 1; }
   printf '%s' "$val" >"$VALTMP"
   KEY="$key" VALFILE="$VALTMP" \
-    yq e -i 'setpath(
+    yq e -P 'setpath(
                (env(KEY) | split("."));
                (load(env(VALFILE)))
              )' \
-      "$TMP" \
+      "$SETTINGS_YAML" >"$TMP" \
       || { rm -f "$TMP" "$VALTMP"; (( _acq )) && _release_settings_lock; return 1; }
   rm -f "$VALTMP"
   local _ch=0
@@ -1792,19 +1787,18 @@ add_snat() {
   fi
   _require_prepared || { (( _acq )) && _release_settings_lock; return 110; }
   local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   SNAT_IP="$ip" SNAT_NAME="$name" \
-  yq e -i '
+  yq e -P '
     .snat = (.snat // []) |
     .snat |= (
       map(select(.internal != env(SNAT_IP) and .name != env(SNAT_NAME)))
-      + [{
+      + [{                                             # добавить/обновить
           "name":     env(SNAT_NAME),
           "internal": env(SNAT_IP),
           "external": "0.0.0.0"
         }]
     )
-  ' "$TMP"
+  ' "$SETTINGS_YAML" >"$TMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
@@ -1863,12 +1857,15 @@ add_agh_client() {
 
   # Идемпотентный upsert в один проход с tmp-файлом
   local TMP; TMP="$(mktemp)"
-  cp -f "$agh" "$TMP"
   CLIENT_IP="$ip" AGH_NICK="$nick" UPSTREAM_HOST="$UPSTREAM_HOST" AGH_UUID="$AGH_UUID" \
-  yq e -i '
+  yq e -P '
     .clients.persistent = (.clients.persistent // []) |
     .clients.persistent =
       (
+        # выбрасываем любые старые записи того же клиента:
+        #  - по uid (стабильный идентификатор)
+        #  - или по имени
+        #  - или по IP (на случай переименований/смены режима)
         (.clients.persistent
           | map(
               select(
@@ -1881,6 +1878,7 @@ add_agh_client() {
             )
         )
         +
+        # добавляем актуальную запись
         [
           {
             "name": env(AGH_NICK),
@@ -1891,7 +1889,7 @@ add_agh_client() {
           }
         ]
       )
-  ' "$TMP"
+  ' "$agh" >"$TMP"
   local _changed=0
   if _write_if_changed "$agh" "$TMP" yaml; then _changed=1; fi
   if [[ $_changed -eq 1 ]]; then
@@ -1917,12 +1915,11 @@ remove_agh_client() {
   fi
 
   local TMP; TMP="$(mktemp)"
-  cp -f "$agh" "$TMP"
-  if ! AGH_NICK="$nick" yq e -i '
+  if ! AGH_NICK="$nick" yq e -P '
     .clients.persistent = (
       (.clients.persistent // []) | map(select(.name != env(AGH_NICK)))
     )
-  ' "$TMP"; then
+  ' "$agh" >"$TMP"; then
     echo "[WARN] yq failed, skip AdGuardHome client removal" >&2
     rm -f "$TMP"
     if (( _acq )); then _release_settings_lock; fi
@@ -1952,13 +1949,12 @@ remove_snat() {
   fi
   _require_prepared || { (( _acq )) && _release_settings_lock; return 110; }
   local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   NAME="$name" \
-  yq e -i '
+  yq e -P '
     .snat = (
       (.snat // []) | map(select(.name != env(NAME)))
     )
-  ' "$TMP"
+  ' "$SETTINGS_YAML" >"$TMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
@@ -1998,16 +1994,14 @@ update_dns_ips() {
     if ((${#_v6[@]} > 1)); then IPV6_STR+=" | ${_v6[1]}"; fi
   fi
 
-  # Редактируем копию файла IN-PLACE, чтобы не терять комментарии из дефолта
   local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   IPV4_STR="$IPV4_STR" IPV6_STR="$IPV6_STR" DOT_URL="$DOT_URL" DOT_PORT="$DOT_PORT" \
-  yq e -i '
-      .dns.ipv4     = env(IPV4_STR) |
-      .dns.ipv6     = env(IPV6_STR) |
-      .dns.dot      = env(DOT_URL)  |
+  yq e -P '
+      .dns.ipv4 = env(IPV4_STR) |
+      .dns.ipv6 = env(IPV6_STR) |
+      .dns.dot      = env(DOT_URL) |
       .dns.port_tls = (env(DOT_PORT)|tonumber)
-  ' "$TMP"
+  ' "$SETTINGS_YAML" >"$TMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
@@ -2083,12 +2077,11 @@ bump_service_ver() { # $1=fail2ban|adguard_home  $2=new_version
   fi
   today="$(_today)"
   local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
   SVC="$svc" VER="$new" UPD="$today" \
-  yq e -i '
+  yq e -P '
     .[env(SVC)].version = env(VER) |
     .[env(SVC)].updated = env(UPD)
-  ' "$TMP"
+  ' "$SETTINGS_YAML" >"$TMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
@@ -2365,7 +2358,7 @@ agh_heal() {
     <(safe_doc "$AGH_YAML") >"$MERGE_TMP"
   rm -f "$PTMP"
 
-  # 5. Комментарии: перенос значений из MERGE поверх копии base (in-place)
+  # 5. Комментарии: перенос значений из MERGE поверх копии base (без reduce)
   local GEN_TMP; GEN_TMP="$(mktemp)"; cp -f "$AGH_TMPL_BASE" "$GEN_TMP"
   # Собираем пути-листья из MERGE_TMP
   # Пути до «листьев» (всё, что не объект) — в JSON-массивной форме
@@ -2374,16 +2367,19 @@ agh_heal() {
     | jq -c 'paths | select((getpath(.) | type) != "object")' 2>/dev/null || true
   )
   if ((${#_paths_merge[@]})); then
-    local PJSON VAL
+    local PJSON VAL tmp2
     for PJSON in "${_paths_merge[@]}"; do
       # значение из MERGE_TMP по этому пути (через helper на jq)
       VAL="$(__get_json_at "$MERGE_TMP" "$PJSON" 2>/dev/null || echo 'null')"
+      tmp2="$(mktemp)"
       P="$PJSON" V="$VAL" \
-        yq e -i '
+        yq e -P '
           (env(P) | from_yaml) as $p
           | (env(V) | from_yaml) as $v
           | if $v == null then . else setpath($p; $v) end
-        ' "$GEN_TMP" || true
+        ' "$GEN_TMP" >"$tmp2" \
+        || { rm -f "$tmp2"; continue; }
+      mv -f -- "$tmp2" "$GEN_TMP"
     done
   fi
   rm -f "$MERGE_TMP"
