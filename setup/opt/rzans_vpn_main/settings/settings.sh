@@ -35,6 +35,20 @@ _yq_apply() {
 }
 # -----------------------------------------------------------------------------
 
+# Принудительно выставить стиль double-quoted всем строковым скалярам YAML.
+# Не трогаем числа/булевы/массивы/карты.
+_yaml_force_double_quotes() {
+  local f="$1"
+  [[ -f "$f" ]] || return 0
+  # yq v4: проходим по всем нодам (...), выбираем только строки (tag == "!!str")
+  # и ставим style="double". Ошибки не фатальны.
+  yq e -i '
+    (... |
+      select(tag == "!!str")
+    ) style = "double"
+  ' "$f" 2>/dev/null || true
+}
+
 # ── base paths (для единообразия путей) ───────────────────────────
 : "${BASE_DIR:=/opt/rzans_vpn_main}"
 : "${SETTINGS_DIR:=${BASE_DIR}/settings}"
@@ -1281,6 +1295,22 @@ __settings_need_heal() {
 
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
+    # Дополнительные триггеры на хил по «битому» типу:
+    #  - если в defaults ожидается boolean, а в settings лежит НЕ bool и НЕ «boolish» строка;
+    #  - если ожидается int, а в settings лежит НЕ число и НЕ строковое число.
+    if [[ "$TDEF" == "!!bool" ]]; then
+      local CURT; CURT="$(__type_at "$S" "$P")"
+      if [[ "$CURT" != "!!bool" ]] && ! __is_boolish_json "$V"; then
+        return 0
+      fi
+    fi
+    if [[ "$TDEF" == "!!int" ]]; then
+      local CURT; CURT="$(__type_at "$S" "$P")"
+      if [[ "$CURT" != "!!int" ]] && [[ ! "$V" =~ ^\"-?[0-9]+\"$ ]]; then
+        return 0
+      fi
+    fi
+
     # Миграция: если по схеме ожидается boolean, а в файле лежит «y/n/yes/no/...»
     # (то есть это boolish-строка, НЕ строгий JSON-bool) — нужно лечить.
     if [[ "$TDEF" == "!!bool" ]]; then
@@ -1321,11 +1351,16 @@ settings_heal() {
 
   # Файл отсутствует/пуст/битый YAML → берём дефолт (и сохраняем бэкап битого)
   if [[ ! -s "$S" ]]; then
-    install -D -m600 "$D" "$S"; settings_fix_perms || true; return 0
+    install -D -m600 "$D" "$S"
+    # Канонизация строк: двойные кавычки везде, где тип строки
+    _yaml_force_double_quotes "$S"
+    settings_fix_perms || true
+    return 0
   fi
   if ! yq e '.' "$S" >/dev/null 2>&1; then
     cp -f -- "$S" "${S}.broken.$(date +%s)" 2>/dev/null || true
     cp -f -- "$D" "$S"
+    _yaml_force_double_quotes "$S"
     settings_fix_perms || true
     return 0
   fi
@@ -1374,6 +1409,10 @@ settings_heal() {
     # В DST сохраняются комментарии/порядок из defaults; set только скаляров.
     _yq_apply "$DST" ".${key} = \$V" "$VSET"
   done
+
+  # Глобальная канонизация стиля строк после переноса валидных значений:
+  # все строковые скаляры → двойные кавычки.
+  _yaml_force_double_quotes "$DST"
 
   # Доп. канонизация: allowip.* если были заданы строкой → превратить в массив
   local VAI
