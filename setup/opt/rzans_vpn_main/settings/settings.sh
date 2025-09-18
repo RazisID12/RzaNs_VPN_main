@@ -1006,6 +1006,29 @@ __is_domain() {
   [[ "$s" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
 }
 
+# Извлечь голый хост из "urlish"-строки (схема, //, путь — отбрасываются).
+__extract_host_from_urlish() {
+  local s="$1"
+  case "$s" in \"*\") s="${s:1:${#s}-2}";; esac   # снять JSON-кавычки, если есть
+  s="${s#http://}"; s="${s#https://}"; s="${s#//}"
+  s="${s%%/*}"; printf '%s' "$s"
+}
+
+# Разбить строку "a b  c" → JSON-массив ["a","b","c"] (пустые токены выкидываются).
+__space_split_to_json_array() {
+  local s="$1" toks=() out='[' first=1 t
+  case "$s" in \"*\") s="${s:1:${#s}-2}";; esac   # снять JSON-кавычки
+  # нормализуем пробелы
+  s="$(printf '%s' "$s" | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  read -r -a toks <<<"$s"
+  for t in "${toks[@]}"; do
+    [[ -z "$t" ]] && continue
+    t="${t//\\/\\\\}"; t="${t//\"/\\\"}"
+    if (( first )); then out+="\"$t\""; first=0; else out+=",\"$t\""; fi
+  done
+  out+=']'; printf '%s' "$out"
+}
+
 __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 
 # == JSON-path utils ==
@@ -1050,6 +1073,25 @@ __map_value_paths() { # печатает dot-пути ТОЛЬКО по map-кл
   | LC_ALL=C sort -u
 }
 
+# == Dynamic (cosmetic/service) keys we DO NOT validate / diff against ==
+#  • cosmetics: dns.ipv4 / dns.ipv6 / dns.dot
+#  • service meta: fail2ban.version/updated, adguard_home.version/updated
+#  ВАЖНО: dns.port_tls НЕ считается «косметикой» и должен валидироваться,
+#  храниться и переноситься как полноценная настройка.
+__is_dynamic_key() {
+  case "$1" in
+    dns.ipv4|dns.ipv6|dns.dot|\
+    fail2ban.version|fail2ban.updated|\
+    adguard_home.version|adguard_home.updated) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Утилита для фильтрации путей по динамическим ключам (map-значения по dot-путям)
+__filter_out_dynamic() {
+  grep -Ev '^(dns\.(ipv4|ipv6|dot)|fail2ban\.(version|updated)|adguard_home\.(version|updated))$'
+}
+
 # == Персональная проверка значения по ключу (JSON-представление) ==
 # $1=dotkey $2=value_json $3=default_yaml_type (!!str/!!int/!!bool/!!seq/!!map)
 __kv_valid() {
@@ -1077,7 +1119,7 @@ __kv_valid() {
   fi
 
   # routing.* — строгие булевы
-  if [[ "$key" == routing.route_all || "$key" == routing.flags.* ]]; then
+  if [[ "$key" == "routing.route_all" || "$key" == "routing.flags" ]]; then
     __is_boolish_json "$vjson"; return $?
   fi
 
@@ -1089,7 +1131,9 @@ __kv_valid() {
     server.domain)
       __is_auto_json "$vjson" && return 0
       [[ "$tdef" == "!!str" ]] || return 1
-      __is_domain "$s"
+      # Принимаем urlish-форму, валидируем уже голый хост
+      local host; host="$(__extract_host_from_urlish "$vjson")"
+      __is_domain "$host"
       ;;
     server.ipv4)
       __is_auto_json "$vjson" && return 0
@@ -1120,7 +1164,8 @@ __kv_valid() {
         mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       else
         [[ "$vjson" == \"*\" ]] || return 1
-        _arr=( "$vjson" )
+        # Разрешаем строку адресов через пробелы
+        mapfile -t _arr < <(__space_split_to_json_array "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       fi
       local x
       for x in "${_arr[@]}"; do
@@ -1139,7 +1184,7 @@ __kv_valid() {
         mapfile -t _arr < <(printf '%s' "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       else
         [[ "$vjson" == \"*\" ]] || return 1
-        _arr=( "$vjson" )
+        mapfile -t _arr < <(__space_split_to_json_array "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       fi
       local x
       for x in "${_arr[@]}"; do
@@ -1176,7 +1221,7 @@ __kv_valid() {
       return 0
       ;;
     fail2ban.enable|adguard_home.enable)
-      __is_bool_json "$vjson"
+      __is_boolish_json "$vjson"
       ;;
     *)
       # Строгая проверка соответствия типов значению из settings
@@ -1196,20 +1241,30 @@ __kv_valid() {
   esac
 }
 
-# == Нужно ли лечить файл? ==
+# == Нужно ли лечить файл? (heal only when needed) ==
 __settings_need_heal() {
   local S="$SETTINGS_YAML" D="$DEFAULTS_YAML"
   [[ -s "$S" ]] || return 0
   yq e '.' "$S" >/dev/null 2>&1 || return 0
 
-  # Лишние ключи?
+  # Лишние ключи? (игнорируем динамические/косметические)
   local extra
-  extra="$(comm -23 <(__map_value_paths "$S") <(__map_value_paths "$D") || true)"
+  extra="$(
+    comm -23 \
+      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
+      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
+    || true
+  )"
   [[ -n "$extra" ]] && return 0
 
-  # Отсутствующие ключи?
+  # Отсутствующие ключи? (игнорируем динамические/косметические)
   local miss
-  miss="$(comm -13 <(__map_value_paths "$S") <(__map_value_paths "$D") || true)"
+  miss="$(
+    comm -13 \
+      <(__map_value_paths "$S" | __filter_out_dynamic || true) \
+      <(__map_value_paths "$D" | __filter_out_dynamic || true) \
+    || true
+  )"
   [[ -n "$miss" ]] && return 0
 
   # Валидация значений для всех ключей схемы (кроме автозаполняемых)
@@ -1221,6 +1276,9 @@ __settings_need_heal() {
   for P in "${_paths[@]}"; do
   # P — JSON-массив пути (jq paths), TDEF — тип в дефолте, V — значение в текущем S.
     key="$(__pjson_to_dot "$P")"
+    # Динамические/косметические ключи НЕ считаем отклонением — пропускаем
+    if __is_dynamic_key "$key"; then continue; fi
+
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
     # Миграция: если по схеме ожидается boolean, а в файле лежит «y/n/yes/no/...»
@@ -1233,6 +1291,26 @@ __settings_need_heal() {
 
     __kv_valid "$key" "$V" "$TDEF" || return 0
   done
+
+  # Доп. кейсы канонизации, требующие heal даже при «валидно»:
+  # 1) server.domain: urlish → нужно нормализовать до голого хоста
+  local _dom; _dom="$(__get_json_at "$S" '["server","domain"]')"
+  if [[ "$_dom" == \"*\" && "${_dom,,}" != '"auto"' ]]; then
+    local host; host="$(__extract_host_from_urlish "$_dom")"
+    [[ "\"$host\"" != "$_dom" ]] && return 0
+  fi
+  # 2) allowip.*: строка с адресами → нормализовать в массив
+  local _t v
+  _t="$(__type_at "$S" '["allowip","ipv4"]')"
+  if [[ "$_t" == "!!str" ]]; then
+    v="$(__get_json_at "$S" '["allowip","ipv4"]')"
+    [[ "${v,,}" != '"auto"' && "$v" != '""' ]] && return 0
+  fi
+  _t="$(__type_at "$S" '["allowip","ipv6"]')"
+  if [[ "$_t" == "!!str" ]]; then
+    v="$(__get_json_at "$S" '["allowip","ipv6"]')"
+    [[ "${v,,}" != '"auto"' && "$v" != '""' ]] && return 0
+  fi
   return 1  # всё валидно → heal не нужен
 }
 
@@ -1252,7 +1330,7 @@ settings_heal() {
     return 0
   fi
 
-  # Если всё валидно — не трогаем
+  # Heal запускаем ТОЛЬКО при необходимости (валидность/канонизация).
   if ! __settings_need_heal; then
     return 0
   fi
@@ -1266,6 +1344,9 @@ settings_heal() {
   mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
+    # Динамические/косметические ключи НЕ переносим (их выставит косметика/авто-логика)
+    if __is_dynamic_key "$key"; then continue; fi
+
     TDEF="$(__type_at "$D" "$P")"
     V="$(__get_json_at "$S" "$P")"
     # Нормализация типов перед валидацией:
@@ -1280,12 +1361,30 @@ settings_heal() {
     if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
       VSET="$(__to_json_bool "$V")"
     fi
+    # Нормализация server.domain до голого хоста
+    if [[ "$key" == "server.domain" ]]; then
+      if [[ "$V" != null && "$V" != '"__absent__"' && "${V,,}" != '"auto"' ]]; then
+        local host; host="$(__extract_host_from_urlish "$V")"
+        VSET="\"$host\""
+      fi
+    fi
     # Оверлей в копию defaults IN-PLACE через helper (_yq_apply).
     # Пропускаем null, чтобы не затирать дефолты и сохраняем тип значения.
     [[ "$VSET" == "null" ]] && continue
     # В DST сохраняются комментарии/порядок из defaults; set только скаляров.
     _yq_apply "$DST" ".${key} = \$V" "$VSET"
   done
+
+  # Доп. канонизация: allowip.* если были заданы строкой → превратить в массив
+  local VAI
+  VAI="$(__get_json_at "$S" '["allowip","ipv4"]')"
+  if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
+    _yq_apply "$DST" ".allowip.ipv4 = \$V" "$(__space_split_to_json_array "$VAI")"
+  fi
+  VAI="$(__get_json_at "$S" '["allowip","ipv6"]')"
+  if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
+    _yq_apply "$DST" ".allowip.ipv6 = \$V" "$(__space_split_to_json_array "$VAI")"
+  fi
 
   local _ch=0
   if _write_if_changed "$S" "$DST" yaml; then _ch=1; fi
@@ -1394,11 +1493,21 @@ yaml_bool() {
 }
 
 yaml_allow_all() {
-  # null→[], скаляр→[скаляр], массив «как есть»; dedup прямо в yq
+  # null→[], скаляр-строка "a b c"→["a","b","c"], массив «как есть»; dedup прямо в yq
   _yaml_merged | yq e -r '
-    # Нормализация без if/then: null→[], скаляр→[скаляр], массив→как есть
-    ( .allowip.ipv4 | ([(. // [])] | flatten) ) as $A |
-    ( .allowip.ipv6 | ([(. // [])] | flatten) ) as $B |
+    def norm(v):
+      if v == null then []
+      elif (v | type) == "string" then
+        ( v
+          | gsub("[[:space:]]+";" ")
+          | sub("^ ";"")
+          | sub(" $";"")
+          | split(" ")
+        )
+      else ([(v)] | flatten)
+      end;
+    ( .allowip.ipv4 | norm(.) ) as $A |
+    ( .allowip.ipv6 | norm(.) ) as $B |
     ( $A + $B )
       | map(select(. != null and . != "auto"))
       # Тримминг краевых пробелов/табов: совместимо с gojq (yq v4)
@@ -1976,8 +2085,9 @@ remove_snat() {
 ###############################################################################
 
 # Обновить «косметические» поля в settings.yaml по dns.upstream:
-#   • .dns.ipv4 / .dns.ipv6   — человекочитаемые строки вида "up://A | B"
-#   • .dns.dot / .dns.port_tls — URL DoT (tls://…) и порт TLS для @1
+#   • .dns.ipv4 / .dns.ipv6 — человекочитаемые строки вида "up://A | B"
+#   • .dns.dot              — URL DoT (tls://…) для @1
+# ПРИМЕЧАНИЕ: dns.port_tls НЕ трогаем (это не «косметика»).
 update_dns_ips() {
   local _acq=0
   if [[ -z "${_SETTINGS_LOCK_FD:-}" ]]; then
@@ -1987,8 +2097,8 @@ update_dns_ips() {
   _require_prepared || { (( _acq )) && _release_settings_lock; return 110; }
   local ips=(); mapfile -t ips < <(yaml_bootstrap)   # 0-3: ipv4a ipv4b ipv6a ipv6b
   local ipv4a=${ips[0]} ipv4b=${ips[1]} ipv6a=${ips[2]} ipv6b=${ips[3]}
-  local DOT_URL DOT_PORT
-  read -r DOT_URL DOT_PORT < <(yaml_dot)
+  local DOT_URL _DOT_PORT_IGN
+  read -r DOT_URL _DOT_PORT_IGN < <(yaml_dot)
 
   # Собираем косметические строки: "up://A | B" (второй может отсутствовать)
   local IPV4_STR=""; local IPV6_STR=""
@@ -2006,12 +2116,11 @@ update_dns_ips() {
   # Редактируем копию файла IN-PLACE, чтобы не терять комментарии из дефолта
   local TMP; TMP="$(mktemp)"
   cp -f "$SETTINGS_YAML" "$TMP"
-  IPV4_STR="$IPV4_STR" IPV6_STR="$IPV6_STR" DOT_URL="$DOT_URL" DOT_PORT="$DOT_PORT" \
+  IPV4_STR="$IPV4_STR" IPV6_STR="$IPV6_STR" DOT_URL="$DOT_URL" \
   yq e -i '
       .dns.ipv4     = env(IPV4_STR) |
       .dns.ipv6     = env(IPV6_STR) |
-      .dns.dot      = env(DOT_URL)  |
-      .dns.port_tls = (env(DOT_PORT)|tonumber)
+      .dns.dot      = env(DOT_URL)
   ' "$TMP"
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
