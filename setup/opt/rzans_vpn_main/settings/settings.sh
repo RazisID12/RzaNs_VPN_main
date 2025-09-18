@@ -35,20 +35,6 @@ _yq_apply() {
 }
 # -----------------------------------------------------------------------------
 
-# Принудительно выставить стиль double-quoted всем строковым скалярам YAML.
-# Не трогаем числа/булевы/массивы/карты.
-_yaml_force_double_quotes() {
-  local f="$1"
-  [[ -f "$f" ]] || return 0
-  # yq v4: проходим по всем нодам (...), выбираем только строки (tag == "!!str")
-  # и ставим style="double". Ошибки не фатальны.
-  yq e -i '
-    (... |
-      select(tag == "!!str")
-    ) style = "double"
-  ' "$f" 2>/dev/null || true
-}
-
 # ── base paths (для единообразия путей) ───────────────────────────
 : "${BASE_DIR:=/opt/rzans_vpn_main}"
 : "${SETTINGS_DIR:=${BASE_DIR}/settings}"
@@ -1352,15 +1338,12 @@ settings_heal() {
   # Файл отсутствует/пуст/битый YAML → берём дефолт (и сохраняем бэкап битого)
   if [[ ! -s "$S" ]]; then
     install -D -m600 "$D" "$S"
-    # Канонизация строк: двойные кавычки везде, где тип строки
-    _yaml_force_double_quotes "$S"
     settings_fix_perms || true
     return 0
   fi
   if ! yq e '.' "$S" >/dev/null 2>&1; then
     cp -f -- "$S" "${S}.broken.$(date +%s)" 2>/dev/null || true
     cp -f -- "$D" "$S"
-    _yaml_force_double_quotes "$S"
     settings_fix_perms || true
     return 0
   fi
@@ -1409,10 +1392,6 @@ settings_heal() {
     # В DST сохраняются комментарии/порядок из defaults; set только скаляров.
     _yq_apply "$DST" ".${key} = \$V" "$VSET"
   done
-
-  # Глобальная канонизация стиля строк после переноса валидных значений:
-  # все строковые скаляры → двойные кавычки.
-  _yaml_force_double_quotes "$DST"
 
   # Доп. канонизация: allowip.* если были заданы строкой → превратить в массив
   local VAI
@@ -1532,25 +1511,35 @@ yaml_bool() {
 }
 
 yaml_allow_all() {
-  # null→[], скаляр-строка "a b c"→["a","b","c"], массив «как есть»; dedup прямо в yq
+  # null→[], строка "a b  c"→["a","b","c"], массив «как есть»; dedup прямо в yq
   _yaml_merged | yq e -r '
-    def norm(v):
-      if v == null then []
-      elif (v | type) == "string" then
-        ( v
-          | gsub("[[:space:]]+";" ")
-          | sub("^ ";"")
-          | sub(" $";"")
+    # .allowip.ipv4 → $A
+    ( .allowip.ipv4 // [] |
+      if tag == "!!null" then []
+      elif tag == "!!str" then
+        . | gsub("[[:space:]]+"; " ")
+          | sub("^ "; "")
+          | sub(" $"; "")
           | split(" ")
-        )
-      else ([(v)] | flatten)
-      end;
-    ( .allowip.ipv4 | norm(.) ) as $A |
-    ( .allowip.ipv6 | norm(.) ) as $B |
+      elif tag == "!!seq" then .
+      else [ . ]
+      end
+    ) as $A |
+    # .allowip.ipv6 → $B
+    ( .allowip.ipv6 // [] |
+      if tag == "!!null" then []
+      elif tag == "!!str" then
+        . | gsub("[[:space:]]+"; " ")
+          | sub("^ "; "")
+          | sub(" $"; "")
+          | split(" ")
+      elif tag == "!!seq" then .
+      else [ . ]
+      end
+    ) as $B |
     ( $A + $B )
       | map(select(. != null and . != "auto"))
-      # Тримминг краевых пробелов/табов: совместимо с gojq (yq v4)
-      | map( sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; "") )
+      | map(sub("^[[:space:]]+"; "") | sub("[[:space:]]+$"; ""))
       | map(select(. != ""))
       | unique
       | .[]
