@@ -767,6 +767,26 @@ find /opt/rzans_vpn_main -type f \
      -not -name '*.sh' -not -name '*.py' -exec chmod 0644 {} +
 find /opt/rzans_vpn_main -type f \( -name '*.sh' -o -name '*.py' \) -exec chmod 0755 {} +
 
+ # ── FS sanity: чтобы сервисы не падали на /usr/bin/env и /usr/sbin/kresd ──
+ # На некоторых системах /usr мог оказаться 0750 → юниты под неблаг. пользователями
+ # не могут пройти по /usr и /usr/{bin,sbin}. Приводим к стандарту 0755.
+ _fix_traverse_dir() {
+   local d="$1"
+   [[ -d "$d" ]] || return 0
+   chown root:root "$d" 2>/dev/null || true
+   chmod u+rwx,go+rx,go-w "$d" 2>/dev/null || true   # 0755
+ }
+ for d in /usr /usr/bin /usr/sbin; do
+   _fix_traverse_dir "$d"
+ done
+
+ # Подсветим noexec на /usr (лечить монтирование здесь не будем)
+ if command -v findmnt >/dev/null 2>&1; then
+   if findmnt -no OPTIONS /usr 2>/dev/null | grep -qw noexec; then
+     echo -e "\e[1;33mWARNING:\e[0m /usr смонтирован с noexec — бинарники не запустятся."
+   fi
+ fi
+
 ##############################################################################
 # PREPARE + применение ответов (после возврата бэкапа)                       #
 ##############################################################################

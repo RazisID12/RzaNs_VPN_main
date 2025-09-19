@@ -1,8 +1,14 @@
 # /etc/systemd/system/apply.service
 [Unit]
 Description=Apply settings
-After=local-fs.target firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
-Wants=firewall.service kresd@1.service kresd@2.service kresd@3.service kresd@4.service AdGuardHome.service proxy.service wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+After=local-fs.target firewall.service \
+      kresd@1.service kresd@2.service kresd@3.service kresd@4.service \
+      AdGuardHome.service proxy.service \
+      wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
+Wants=firewall.service \
+      kresd@1.service kresd@2.service kresd@3.service kresd@4.service \
+      AdGuardHome.service proxy.service \
+      wg-quick@rzans_svpn_main.service wg-quick@rzans_fvpn_main.service
 RequiresMountsFor=/opt/rzans_vpn_main
 ConditionPathExists=/opt/rzans_vpn_main/settings/settings.sh
 

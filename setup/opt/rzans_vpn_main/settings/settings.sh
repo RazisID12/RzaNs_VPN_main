@@ -3110,15 +3110,15 @@ case "${1:-}" in
   --sync-fw-dot)       _require_root; shift; "${FIREWALL_DIR}/up.sh" --fw-dot-port;  exit $? ;;
   --sync-fw)           _require_root; shift; _with_lock sync_fw_all                  "$@"; exit $? ;;
   --switch-system-resolve) shift; _with_lock switch_system_resolve   "$@"; exit $? ;;
-  --autofill)         shift; _with_lock autofill_settings            "$@"; exit $? ;;
-  --agh-allowed-clients) shift;
+  --autofill)         _require_root; shift; _with_lock autofill_settings            "$@"; exit $? ;;
+  --agh-allowed-clients) _require_root; shift;
     DEFER_RESTARTS=1 _with_lock agh_allowed_clients "$@"
     # Если реально были изменения и AGH включён — мягко обновим уже БЕЗ лока
     if (( AGH_ALLOWED_CHANGED )) && [[ "$(yaml_bool 'adguard_home.enable')" == y ]]; then
       _settings__svc try-reload-or-restart AdGuardHome.service || true
     fi
     exit 0 ;;
-  --agh-sync)          shift;
+  --agh-sync)          _require_root; shift;
     # Держим единое правило: никаких рестартов «под» локом.
     DEFER_RESTARTS=1 _with_lock agh_allowed_clients "$@"
     if (( AGH_ALLOWED_CHANGED )) && [[ "$(yaml_bool 'adguard_home.enable')" == y ]]; then
