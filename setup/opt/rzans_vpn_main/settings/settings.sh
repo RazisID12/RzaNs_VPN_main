@@ -1067,7 +1067,7 @@ __filter_ipv6_array() {
  #  - фильтр валидных токенов
  #  - dedup
  #  - компактный flow-вид массива (читаемо: [1.2.3.4, 5.6.7.8])
- normalize_allowip() {
+ normalize_ip() {
    local _acq=0
    # Брать лок только если его ещё нет (реентерабельно с ipset/allow_sync)
    if [[ -z "${_SETTINGS_LOCK_FD:-}" && -z "${_SETTINGS_LOCK_MDIR:-}" ]]; then
@@ -1402,7 +1402,7 @@ settings_heal() {
   (( _ch == 1 )) && settings_fix_perms || true
  
    # Единая канонизация allowip.* поверх уже собранного settings.yaml
-   normalize_allowip || true
+   normalize_ip || true
   return 0
 }
 
@@ -1638,7 +1638,7 @@ allow_sync_ipsets() {
   done
  
    # Приводим allowip.* к единому виду после «усыновления» адресов из ipset
-   normalize_allowip || true
+   normalize_ip || true
 }
 
 # -------- Внешний интерфейс и IP-адреса (централизовано) --------------------
