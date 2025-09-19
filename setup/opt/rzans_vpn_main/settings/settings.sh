@@ -935,7 +935,7 @@ __is_port()        { [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 )
 __is_bool_json()   { [[ "$1" == "true" || "$1" == "false" ]]; }
 __is_auto_json()   { [[ "${1,,}" == '"auto"' ]]; }
 
-# -- bool helpers: accept legacy "y/n/yes/no/..." and coerce to JSON true/false
+# -- bool helpers: STRICT set: accept ONLY true/false or yes/no (case-insensitive)
 __boolish_unquote_lower() {
   local v="$1"
   case "$v" in
@@ -946,15 +946,15 @@ __boolish_unquote_lower() {
 __is_boolish_json() {
   local s; s="$(__boolish_unquote_lower "$1")"
   case "$s" in
-    true|false|y|yes|1|on|enable|enabled|n|no|0|off|disable|disabled) return 0 ;;
+    true|false|yes|no) return 0 ;;
     *) return 1 ;;
   esac
 }
 __to_json_bool() {
   local s; s="$(__boolish_unquote_lower "$1")"
   case "$s" in
-    true|y|yes|1|on|enable|enabled)  printf 'true'  ;;
-    false|n|no|0|off|disable|disabled) printf 'false' ;;
+    true|yes)  printf 'true'  ;;
+    false|no)  printf 'false' ;;
     *) printf '%s' "$1" ;;
   esac
 }
@@ -967,7 +967,7 @@ __is_ipv4_cidr() {
   [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]{1,2})$ ]] || return 1
   IFS=/ read -r ip m <<<"$1"
   __is_ipv4 "$ip" || return 1
-  [[ "$m" =~ ^[0-9]+$ ]] && (( m>=0 && m<=32 ))
+  [[ "$m" =~ ^[0-9]+$ ]] && (( 10#$m >= 0 && 10#$m <= 32 ))
 }
 
 # Достаточно строгая эвристика IPv6 (поддерживает ::, 1..8 хекстретов и IPv4-embedded/mapped)
@@ -1090,7 +1090,7 @@ __filter_ipv6_array() {
      else
        _arr_json="[]"
      fi
-     _filtered="$(__filter_ipv4_array "$_arr_json")"
+     _filtered="$(__filter_ipv4_array "$_arr_json" | jq -c 'unique')"
      _yq_apply "$TMP" ".allowip.ipv4 = \$V" "$_filtered"
      yq e -i '.allowip.ipv4 style="flow"' "$TMP" || true
    fi
@@ -1105,7 +1105,7 @@ __filter_ipv6_array() {
      else
        _arr_json="[]"
      fi
-     _filtered="$(__filter_ipv6_array "$_arr_json")"
+     _filtered="$(__filter_ipv6_array "$_arr_json" | jq -c 'map(ascii_downcase) | unique')"
      _yq_apply "$TMP" ".allowip.ipv6 = \$V" "$_filtered"
      yq e -i '.allowip.ipv6 style="flow"' "$TMP" || true
    fi
@@ -1254,6 +1254,9 @@ __kv_valid() {
         # Разрешаем строку адресов через пробелы
         mapfile -t _arr < <(__space_split_to_json_array "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       fi
+      # Пустой список — запрещён (только auto означает «особый» режим)
+      ((${#_arr[@]} >= 1)) || return 1
+
       local x
       for x in "${_arr[@]}"; do
         [[ "$x" == \"*\" ]] || return 1
@@ -1273,6 +1276,9 @@ __kv_valid() {
         [[ "$vjson" == \"*\" ]] || return 1
         mapfile -t _arr < <(__space_split_to_json_array "$vjson" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
       fi
+      # Пустой список — запрещён (только auto допускается как «по умолчанию»)
+      ((${#_arr[@]} >= 1)) || return 1
+
       local x
       for x in "${_arr[@]}"; do
         [[ "$x" == \"*\" ]] || return 1
@@ -1293,6 +1299,8 @@ __kv_valid() {
       local n i name internal external
       n="$(printf '%s' "$vjson" | yq e 'length' - 2>/dev/null)"
       [[ "$n" =~ ^[0-9]+$ ]] || return 1
+      # Пустой массив запрещён: либо auto, либо >=1 запись
+      (( n >= 1 )) || return 1
       declare -A __seen_names=()
       for ((i=0;i<n;i++)); do
         name="$(printf '%s' "$vjson" | yq e -r ".[$i].name // \"\"" - 2>/dev/null)"
@@ -1308,8 +1316,7 @@ __kv_valid() {
       return 0
       ;;
     fail2ban.enable|adguard_home.enable)
-      __is_boolish_json "$vjson"
-      return $?
+      __is_boolish_json "$vjson"; return $?
       ;;
     *)
       # Строгая проверка соответствия типов значению из settings
@@ -2103,8 +2110,9 @@ remove_snat() {
 ###############################################################################
 
 # Обновить «косметические» поля в settings.yaml по dns.upstream:
-#   • .dns.ipv4 / .dns.ipv6 — человекочитаемые строки вида "up://A | B"
-#   • .dns.dot              — URL DoT (tls://…) для @1
+#   • .dns.ipv4 — массив в flow-стиле: ["A", "B"]
+#   • .dns.ipv6 — массив из ОДНОГО элемента: ["A | B"]
+#   • .dns.dot  — массив из ОДНОГО элемента: ["tls://…"]
 # ПРИМЕЧАНИЕ: dns.port_tls НЕ трогаем (это не «косметика»).
 update_dns_ips() {
   local _acq=0
@@ -2115,31 +2123,28 @@ update_dns_ips() {
   _require_prepared || { (( _acq )) && _release_settings_lock; return 110; }
   local ips=(); mapfile -t ips < <(yaml_bootstrap)   # 0-3: ipv4a ipv4b ipv6a ipv6b
   local ipv4a=${ips[0]} ipv4b=${ips[1]} ipv6a=${ips[2]} ipv6b=${ips[3]}
-  local DOT_URL _DOT_PORT_IGN
-  read -r DOT_URL _DOT_PORT_IGN < <(yaml_dot)
+  local DOT_URL _DOT_PORT_IGN; read -r DOT_URL _DOT_PORT_IGN < <(yaml_dot)
 
-  # Собираем косметические строки: "up://A | B" (второй может отсутствовать)
-  local IPV4_STR=""; local IPV6_STR=""
-  if [[ -n "$ipv4a" || -n "$ipv4b" ]]; then
-    local _v4=(); [[ -n "$ipv4a" ]] && _v4+=("up://$ipv4a"); [[ -n "$ipv4b" ]] && _v4+=("$ipv4b")
-    IPV4_STR="${_v4[0]:-}"
-    if ((${#_v4[@]} > 1)); then IPV4_STR+=" | ${_v4[1]}"; fi
-  fi
+  # Сформировать JSON-массивы для записи через _yq_apply
+  local V4_JSON='[' first=1
+  if [[ -n "$ipv4a" ]]; then V4_JSON+="\"$ipv4a\""; first=0; fi
+  if [[ -n "$ipv4b" ]]; then [[ $first -eq 0 ]] && V4_JSON+=','; V4_JSON+="\"$ipv4b\""; fi
+  V4_JSON+=']'
+  local V6_STR=""
   if [[ -n "$ipv6a" || -n "$ipv6b" ]]; then
-    local _v6=(); [[ -n "$ipv6a" ]] && _v6+=("up://$ipv6a"); [[ -n "$ipv6b" ]] && _v6+=("$ipv6b")
-    IPV6_STR="${_v6[0]:-}"
-    if ((${#_v6[@]} > 1)); then IPV6_STR+=" | ${_v6[1]}"; fi
+    [[ -n "$ipv6a" ]] && V6_STR+="$ipv6a"
+    if [[ -n "$ipv6b" ]]; then [[ -n "$V6_STR" ]] && V6_STR+=" | "; V6_STR+="$ipv6b"; fi
   fi
+  local V6_JSON='[]'; [[ -n "$V6_STR" ]] && V6_JSON="[\"$V6_STR\"]"
+  local DOT_JSON="[\"$DOT_URL\"]"
 
-  # Редактируем копию файла IN-PLACE, чтобы не терять комментарии из дефолта
-  local TMP; TMP="$(mktemp)"
-  cp -f "$SETTINGS_YAML" "$TMP"
-  IPV4_STR="$IPV4_STR" IPV6_STR="$IPV6_STR" DOT_URL="$DOT_URL" \
-  yq e -i '
-      .dns.ipv4     = env(IPV4_STR) |
-      .dns.ipv6     = env(IPV6_STR) |
-      .dns.dot      = env(DOT_URL)
-  ' "$TMP"
+  # Редактируем копию файла, сохраняем комментарии
+  local TMP; TMP="$(mktemp)"; cp -f "$SETTINGS_YAML" "$TMP"
+  _yq_apply "$TMP" ".dns.ipv4 = \$V" "$V4_JSON"
+  _yq_apply "$TMP" ".dns.ipv6 = \$V" "$V6_JSON"
+  _yq_apply "$TMP" ".dns.dot  = \$V" "$DOT_JSON"
+  # Задаём flow-стиль массивов (элементы остаются в кавычках, это норма для yq v4)
+  yq e -i '.dns.ipv4 style="flow" | .dns.ipv6 style="flow" | .dns.dot style="flow"' "$TMP" || true
   local _ch=0
   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
   (( _ch == 1 )) && settings_fix_perms || true
@@ -2963,12 +2968,21 @@ __auto_gen_snapshot() {
   local ALLOW4 ALLOW6 SNAT
   ALLOW4="$(yaml_allow_all | grep -v ':' | awk 'NF' | LC_ALL=C sort -u | paste -sd',' -)"
   ALLOW6="$(yaml_allow_all | grep ':'     | awk 'NF' | LC_ALL=C sort -u | paste -sd',' -)"
+  # Показываем «глобальный режим» SNAT явно:
+  #   snat=MASQUERADE  ← если snat: auto / отсутствует / null
+  #   snat=name=ip:ext;… ← если заданы явные записи
   SNAT="$(
     _yaml_merged | yq e -r '
-      (.snat // [])
-      | map({name: .name, internal: .internal, external: ((.external // "0.0.0.0"))})
-      | sort_by([.name, .internal, .external])
-      | .[] | "\(.name)=\(.internal):\(.external)"
+      .snat as $s
+      | if ($s == "auto" or $s == null) then
+          "MASQUERADE"
+        else
+          ($s
+            | map({name, internal, external: (.external // "0.0.0.0")})
+            | sort_by([.name, .internal, .external])
+            | .[] | "\(.name)=\(.internal):\(.external)"
+          )
+        end
     ' - 2>/dev/null | paste -sd';' -
   )"
   {
