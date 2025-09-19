@@ -1111,17 +1111,14 @@ __kv_valid() {
       return 1 ;;
   esac
 
-  # Булевы по схеме: принимаем как строгие JSON-boolean, так и «boolish» строки
-  if [[ "$tdef" == "!!bool" ]]; then
-    __is_boolish_json "$vjson"
-    return $?
-  fi
-
-  # routing.* — строгие булевы
-  # листья вида routing.flags.telegram / routing.flags.discord / ...
-  if [[ "$key" == "routing.route_all" || "$key" == routing.flags.* ]]; then
-    __is_boolish_json "$vjson"
-    return $?
+  # Булевы принимаем «по смыслу»:
+  #  • всегда, если схема bool;
+  #  • а также для типичных булевых ключей, даже если в шаблоне они строковые.
+  if __is_boolish_json "$vjson"; then
+    [[ "$tdef" == "!!bool" ]] && return 0
+    case "$key" in
+      *.enable|routing.flags.*|routing.route_all) return 0 ;;
+    esac
   fi
 
   case "$key" in
@@ -1147,8 +1144,7 @@ __kv_valid() {
       __is_ipv6 "$s"
       ;;
     dns.upstream)
-      __is_auto_json "$vjson" && return 0
-      # избегаем [[ =~ ]] и case: проверяем простым сравниванием
+      # Строго cloudflare|quad9|google
       local __up="${s,,}"
       if [[ "$__up" == "cloudflare" || "$__up" == "quad9" || "$__up" == "google" ]]; then
         return 0
@@ -1265,8 +1261,13 @@ settings_heal() {
   # БАЗА — defaults; поверх него накладываем ТОЛЬКО валидные скаляры из S.
   local DST; DST="$(mktemp)"; cp -f "$D" "$DST"
 
-  # Проходим только по листьям-скалярам схемы defaults.
-  mapfile -t _paths < <( yq e -o=json -I=0 '.' "$D" | jq -c 'paths(scalars)' )
+  # Перечисляем все листья схемы defaults (значения, которые НЕ object/array).
+  # ВАЖНО: не использовать `paths(scalars)`, т.к. он пропускает boolean=false
+  # (фильтр `scalars` возвращает само значение, а `false` – «ложно» в jq).
+  mapfile -t _paths < <(
+    yq e -o=json -I=0 '.' "$D" \
+    | jq -c 'paths | select((.[-1]|type)=="string")'
+  )
   local P key TDEF V VD VOUT CUR
   for P in "${_paths[@]}"; do
     key="$(__pjson_to_dot "$P")"
@@ -1282,8 +1283,8 @@ settings_heal() {
 
     if __kv_valid "$key" "$V" "$TDEF"; then
       VOUT="$V"
-      # boolish → строгий JSON-bool
-      if [[ "$TDEF" == "!!bool" ]] && __is_boolish_json "$V"; then
+      # Всегда: boolish → строгий JSON-bool
+      if __is_boolish_json "$V"; then
         VOUT="$(__to_json_bool "$V")"
       fi
       # server.domain: urlish → голый хост
@@ -2417,7 +2418,7 @@ agh_heal() {
   # Пути до «листьев» (всё, что не объект) — в JSON-массивной форме
   mapfile -t _paths_merge < <(
     yq e -o=json -I=0 '.' "$MERGE_TMP" \
-    | jq -c 'paths | select((getpath(.) | type) != "object")' 2>/dev/null || true
+    | jq -c 'paths | select((.[-1]|type)=="string")' 2>/dev/null || true
   )
   if ((${#_paths_merge[@]})); then
     local PJSON VAL
