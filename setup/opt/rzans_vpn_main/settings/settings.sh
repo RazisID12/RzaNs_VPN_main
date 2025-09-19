@@ -1062,6 +1062,62 @@ __filter_ipv6_array() {
   out+=']'; printf '%s' "$out"
 }
 
+ # Канонизация allowip.ipv4/ipv6 в settings.yaml:
+ #  - строка с адресами → массив
+ #  - фильтр валидных токенов
+ #  - dedup
+ #  - компактный flow-вид массива (читаемо: [1.2.3.4, 5.6.7.8])
+ normalize_allowip() {
+   local _acq=0
+   # Брать лок только если его ещё нет (реентерабельно с ipset/allow_sync)
+   if [[ -z "${_SETTINGS_LOCK_FD:-}" && -z "${_SETTINGS_LOCK_MDIR:-}" ]]; then
+     _ensure_settings_lock || return 1
+     _acq=1
+   fi
+   _require_prepared || { (( _acq )) && _release_settings_lock; return 110; }
+ 
+   local TMP; TMP="$(mktemp)"
+   cp -f "$SETTINGS_YAML" "$TMP"
+ 
+   # IPv4
+   local VAI _arr_json _filtered
+   VAI="$(__get_json_at "$TMP" '["allowip","ipv4"]')"
+   if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
+     if [[ "$VAI" == \"*\" ]]; then
+       _arr_json="$(__space_split_to_json_array "$VAI")"
+     elif [[ "$VAI" == \[*\] ]]; then
+       _arr_json="$VAI"
+     else
+       _arr_json="[]"
+     fi
+     _filtered="$(__filter_ipv4_array "$_arr_json")"
+     _yq_apply "$TMP" ".allowip.ipv4 = \$V" "$_filtered"
+     yq e -i '.allowip.ipv4 style="flow"' "$TMP" || true
+   fi
+ 
+   # IPv6
+   VAI="$(__get_json_at "$TMP" '["allowip","ipv6"]')"
+   if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
+     if [[ "$VAI" == \"*\" ]]; then
+       _arr_json="$(__space_split_to_json_array "$VAI")"
+     elif [[ "$VAI" == \[*\] ]]; then
+       _arr_json="$VAI"
+     else
+       _arr_json="[]"
+     fi
+     _filtered="$(__filter_ipv6_array "$_arr_json")"
+     _yq_apply "$TMP" ".allowip.ipv6 = \$V" "$_filtered"
+     yq e -i '.allowip.ipv6 style="flow"' "$TMP" || true
+   fi
+ 
+   local _ch=0
+   if _write_if_changed "$SETTINGS_YAML" "$TMP" yaml; then _ch=1; fi
+   rm -f "$TMP"
+   (( _ch == 1 )) && settings_fix_perms || true
+   (( _acq )) && _release_settings_lock
+   return 0
+ }
+
 __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 
 # == JSON-path utils ==
@@ -1340,43 +1396,13 @@ settings_heal() {
     fi
   done
 
-  # Доп. канонизация: allowip.* строка → массив токенов
-  local VAI _arr_json _filtered
-  # IPv4: принимаем либо строку, либо массив — но только валидные элементы
-  VAI="$(__get_json_at "$S" '["allowip","ipv4"]')"
-  if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
-    if [[ "$VAI" == \"*\" ]]; then
-      _arr_json="$(__space_split_to_json_array "$VAI")"
-    elif [[ "$VAI" == \[*\] ]]; then
-      _arr_json="$VAI"
-    else
-      _arr_json="[]"
-    fi
-    _filtered="$(__filter_ipv4_array "$_arr_json")"
-    if [[ "$_filtered" != "[]" ]]; then
-      _yq_apply "$DST" ".allowip.ipv4 = \$V" "$_filtered"
-    fi
-  fi
-  # IPv6: аналогично
-  VAI="$(__get_json_at "$S" '["allowip","ipv6"]')"
-  if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
-    if [[ "$VAI" == \"*\" ]]; then
-      _arr_json="$(__space_split_to_json_array "$VAI")"
-    elif [[ "$VAI" == \[*\] ]]; then
-      _arr_json="$VAI"
-    else
-      _arr_json="[]"
-    fi
-    _filtered="$(__filter_ipv6_array "$_arr_json")"
-    if [[ "$_filtered" != "[]" ]]; then
-      _yq_apply "$DST" ".allowip.ipv6 = \$V" "$_filtered"
-    fi
-  fi
-
   local _ch=0
   if _write_if_changed "$S" "$DST" yaml; then _ch=1; fi
   rm -f "$DST"
   (( _ch == 1 )) && settings_fix_perms || true
+ 
+   # Единая канонизация allowip.* поверх уже собранного settings.yaml
+   normalize_allowip || true
   return 0
 }
 
@@ -1610,6 +1636,9 @@ allow_sync_ipsets() {
   for k in "${!CUR6[@]}"; do
     [[ "${CUR6[$k]}" == "src=settings" && -z "${SEEN6[$k]:-}" ]] && ipset del ipset-allow6 "$k" 2>/dev/null || true
   done
+ 
+   # Приводим allowip.* к единому виду после «усыновления» адресов из ipset
+   normalize_allowip || true
 }
 
 # -------- Внешний интерфейс и IP-адреса (централизовано) --------------------

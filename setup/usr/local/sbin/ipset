@@ -31,6 +31,8 @@ case "$cmd" in
       "$REAL" add "$setname" "$elem" comment "src=settings" -exist
     fi
     _release_settings_lock || true
+    # привести allowip.* к единому виду (нормализация из settings.sh)
+    normalize_allowip || true
     # синхронизировать fail2ban ignoreip и мягко перелистнуть f2b
     _update_f2b_ignoreip || true
     systemctl try-reload-or-restart fail2ban >/dev/null 2>&1 || true
@@ -46,6 +48,8 @@ case "$cmd" in
       "$YQ_BIN" -i '.allowip.ipv4 |= (. // []) | . - ["'"$elem"'"]' "$SETTINGS_YAML" || true
     fi
     _release_settings_lock || true
+    # привести allowip.* к единому виду (нормализация из settings.sh)
+    normalize_allowip || true
     _update_f2b_ignoreip || true
     systemctl try-reload-or-restart fail2ban >/dev/null 2>&1 || true
     ;;
