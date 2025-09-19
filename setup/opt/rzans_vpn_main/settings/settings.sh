@@ -58,7 +58,8 @@ yq() { command "$YQ_BIN" "$@"; }
 
 # ── pin jq 1.6+ ──────────────────────────────────────────────────────────────
 : "${JQ_BIN:=/usr/bin/jq}"
-if ! "$JQ_BIN" --version 2>/dev/null | grep -Eq 'jq-1\.(6|[7-9])'; then
+# Принимаем 1.6 и любые будущие 1.x >= 1.6 (включая 1.10, 1.11, …)
+if ! "$JQ_BIN" --version 2>/dev/null | grep -Eq 'jq-1\.([6-9]|[1-9][0-9])'; then
   echo "ERROR: need jq 1.6+ (for path enumeration)" >&2
   exit 91
 fi
@@ -2585,58 +2586,67 @@ agh_heal() {
 #   @3 — SPLIT (IPv4-only, lists) → @1
 #   @4 — FULL  (IPv4-only) → @1
 kresd_heal() {
-  local _changed=0
-  # Читаем «квадру» апстримов: ipv4a ipv4b ipv6a ipv6b
-  local _acq=0
+  local _changed=0 _acq=0
+
+  # Лок берём только если его ещё нет
   if [[ -z "${_SETTINGS_LOCK_FD:-}" ]]; then
     _ensure_settings_lock || return 1
     _acq=1
   fi
+
+  # Инвентарь: «квадра» апстримов и DoT
   local ips=()
-  readarray -t ips < <(yaml_bootstrap)   # 0-3
+  readarray -t ips < <(yaml_bootstrap)   # 0..3 → ipv4a ipv4b ipv6a ipv6b
   local ipv4a="${ips[0]}" ipv4b="${ips[1]}" ipv6a="${ips[2]}" ipv6b="${ips[3]}"
-  local DOT_URL DOT_PORT
-  read -r DOT_URL DOT_PORT < <(yaml_dot)
-  
-  # ── Ensure базовых директорий/файлов Kresd (идемпотентно) ─────────────────
-  # Делаем это здесь, чтобы повторный --prepare не трогал ничего лишнего.
-  install -d -m 755 /etc/knot-resolver 2>/dev/null || true
-  install -d -m 755 /var/lib/knot-resolver 2>/dev/null || true
-  install -d -m 755 /var/cache/knot-resolver 2>/dev/null || true
-  local d
+  local DOT_URL DOT_PORT raw_dot
+  read -r raw_dot DOT_PORT < <(yaml_dot)
+
+  # Нормализация DoT URL: выкинуть случайный '#порт' (порт задаётся отдельно)
+  DOT_URL="${raw_dot%%#*}"
+
+  # Предупреждение, если kresd отсутствует (не фатально)
+  if ! command -v kresd >/dev/null 2>&1 && [[ ! -x /usr/sbin/kresd ]]; then
+    echo "[WARN] kresd_heal: kresd binary not found; continuing with file layout only" >&2
+  fi
+
+  # ── Ensure базовых директорий/прав/владельца (идемпотентно) ────────────────
+  install -d -m 0755 /etc/knot-resolver               2>/dev/null || true
+  install -d -m 0755 /var/lib/knot-resolver           2>/dev/null || true
+  install -d -m 0755 /var/cache/knot-resolver         2>/dev/null || true
+  install -d -m 0755 /run/knot-resolver               2>/dev/null || true
+  install -d -m 0755 /run/knot-resolver/control       2>/dev/null || true
   for d in 1 2 3 4; do
-    install -d -m 755 "/var/cache/knot-resolver/$d" 2>/dev/null || true
+    install -d -m 0755 "/var/cache/knot-resolver/$d"  2>/dev/null || true
   done
-  # Пустой RPZ создаём только если отсутствует (не перетираем существующий)
+  # Пустой RPZ — только если отсутствует
   if [[ ! -f /etc/knot-resolver/proxy.rpz ]]; then
     install -D -m 0644 /dev/null /etc/knot-resolver/proxy.rpz
   fi
-  # Приведём владельца директорий/файлов к пользователю юнита kresd (fallback → root)
+
+  # Привести владельцев под пользователя юнита kresd (fallback: root:root)
   local ug u g
   ug="$(_kresd_unit_user)"; u="${ug%:*}"; g="${ug#*:}"
   chown -R "$u:$g" /etc/knot-resolver /var/lib/knot-resolver /var/cache/knot-resolver 2>/dev/null || true
+  chown -R "$u:$g" /run/knot-resolver 2>/dev/null || true
 
-  # Экранируем одинарные кавычки на случай форматов вида 1.1.1.1#853
-  local ipv4a_e=${ipv4a//\'/\\\'}
-  local ipv4b_e=${ipv4b//\'/\\\'}
-  local ipv6a_e=${ipv6a//\'/\\\'}
-  local ipv6b_e=${ipv6b//\'/\\\'}
-
-  # Раздельные списки для v4/v6
+  # ── Sanity: список апстримов не пуст? иначе — пропускаем обновление lua ────
   local -a UP4_LIST=() UP6_LIST=()
-  [[ -n $ipv4a ]] && UP4_LIST+=("'${ipv4a_e}'")
-  [[ -n $ipv4b ]] && UP4_LIST+=("'${ipv4b_e}'")
-  [[ -n $ipv6a ]] && UP6_LIST+=("'${ipv6a_e}'")
-  [[ -n $ipv6b ]] && UP6_LIST+=("'${ipv6b_e}'")
+  [[ -n $ipv4a ]] && UP4_LIST+=("'${ipv4a//\'/\\\'}'")
+  [[ -n $ipv4b ]] && UP4_LIST+=("'${ipv4b//\'/\\\'}'")
+  [[ -n $ipv6a ]] && UP6_LIST+=("'${ipv6a//\'/\\\'}'")
+  [[ -n $ipv6b ]] && UP6_LIST+=("'${ipv6b//\'/\\\'}'")
 
-  # Sanity check: если апстримов нет — не трогаем файл и не перезапускаем kresd
   if ((${#UP4_LIST[@]} + ${#UP6_LIST[@]} == 0)); then
-    echo "[WARN] kresd_heal: upstream list is empty; skip updating /etc/knot-resolver/upstream_dns.lua" >&2
+    echo "[WARN] kresd_heal: upstream list is empty; skip updating upstream_dns.lua" >&2
+    # Права/директории уже нормализовали — выходим «мягко»
     (( _acq )) && _release_settings_lock
+    KRESD_UPSTREAM_CHANGED=0
     return 0
   fi
+
+  # ── Рендер upstream_dns.lua (атомично, только при изменении) ───────────────
+  local LUA=/etc/knot-resolver/upstream_dns.lua
   local TMP; TMP="$(mktemp)"
-  # Пишем ipv4/ipv6 + DoT параметры (dot/port_tls)
   {
     printf "return {\n"
     { local IFS=,; printf "  ipv4 = {%s},\n" "${UP4_LIST[*]}"; }
@@ -2645,12 +2655,17 @@ kresd_heal() {
     printf "  port_tls = %s\n" "${DOT_PORT}"
     printf "}\n"
   } >"$TMP"
-  local LUA=/etc/knot-resolver/upstream_dns.lua
+
   if _write_if_changed "$LUA" "$TMP"; then _changed=1; fi
-  # Права на lua + proxy.rpz (если есть) — одним вызовом (идемпотентно)
-  kresd_fix_perms || true
-  KRESD_UPSTREAM_CHANGED=${_changed}
+
+  # Права на lua + rpz (идемпотентно) — и SELinux контексты при наличии
+  kresd_fix_perms /etc/knot-resolver/upstream_dns.lua /etc/knot-resolver/proxy.rpz || true
+
+  # Отпускаем лок, если брали здесь
   (( _acq )) && _release_settings_lock
+
+  # Сообщаем наружу про факт изменения
+  KRESD_UPSTREAM_CHANGED=${_changed}
   return 0
 }
 
