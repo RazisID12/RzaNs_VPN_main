@@ -1028,6 +1028,40 @@ __space_split_to_json_array() {
   out+=']'; printf '%s' "$out"
 }
 
+# Фильтры JSON-массивов адресов: оставляют только валидные элементы
+# Вход: JSON-массив строк (например, ["1.2.3.4","10.0.0.0/8"])
+# Выход: JSON-массив строк (без невалидных токенов)
+__filter_ipv4_array() {
+  local arr_json="$1"
+  local -a _arr=()
+  mapfile -t _arr < <(printf '%s' "$arr_json" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+  local out='[' first=1 x s
+  for x in "${_arr[@]}"; do
+    [[ "$x" == \"*\" ]] || continue
+    s="${x:1:${#x}-2}"
+    if __is_ipv4 "$s" || __is_ipv4_cidr "$s"; then
+      s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+      if (( first )); then out+="\"$s\""; first=0; else out+=",\"$s\""; fi
+    fi
+  done
+  out+=']'; printf '%s' "$out"
+}
+__filter_ipv6_array() {
+  local arr_json="$1"
+  local -a _arr=()
+  mapfile -t _arr < <(printf '%s' "$arr_json" | yq e -o=json -I=0 '.[]' - 2>/dev/null)
+  local out='[' first=1 x s
+  for x in "${_arr[@]}"; do
+    [[ "$x" == \"*\" ]] || continue
+    s="${x:1:${#x}-2}"
+    if __is_ipv6 "$s" || __is_ipv6_cidr "$s"; then
+      s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
+      if (( first )); then out+="\"$s\""; first=0; else out+=",\"$s\""; fi
+    fi
+  done
+  out+=']'; printf '%s' "$out"
+}
+
 __is_name32() { [[ "$1" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; }
 
 # == JSON-path utils ==
@@ -1307,14 +1341,36 @@ settings_heal() {
   done
 
   # Доп. канонизация: allowip.* строка → массив токенов
-  local VAI
+  local VAI _arr_json _filtered
+  # IPv4: принимаем либо строку, либо массив — но только валидные элементы
   VAI="$(__get_json_at "$S" '["allowip","ipv4"]')"
-  if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
-    _yq_apply "$DST" ".allowip.ipv4 = \$V" "$(__space_split_to_json_array "$VAI")"
+  if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
+    if [[ "$VAI" == \"*\" ]]; then
+      _arr_json="$(__space_split_to_json_array "$VAI")"
+    elif [[ "$VAI" == \[*\] ]]; then
+      _arr_json="$VAI"
+    else
+      _arr_json="[]"
+    fi
+    _filtered="$(__filter_ipv4_array "$_arr_json")"
+    if [[ "$_filtered" != "[]" ]]; then
+      _yq_apply "$DST" ".allowip.ipv4 = \$V" "$_filtered"
+    fi
   fi
+  # IPv6: аналогично
   VAI="$(__get_json_at "$S" '["allowip","ipv6"]')"
-  if [[ "$VAI" == \"*\" && "${VAI,,}" != '"auto"' ]]; then
-    _yq_apply "$DST" ".allowip.ipv6 = \$V" "$(__space_split_to_json_array "$VAI")"
+  if [[ "${VAI,,}" != '"auto"' && "$VAI" != "null" && "$VAI" != '"__absent__"' ]]; then
+    if [[ "$VAI" == \"*\" ]]; then
+      _arr_json="$(__space_split_to_json_array "$VAI")"
+    elif [[ "$VAI" == \[*\] ]]; then
+      _arr_json="$VAI"
+    else
+      _arr_json="[]"
+    fi
+    _filtered="$(__filter_ipv6_array "$_arr_json")"
+    if [[ "$_filtered" != "[]" ]]; then
+      _yq_apply "$DST" ".allowip.ipv6 = \$V" "$_filtered"
+    fi
   fi
 
   local _ch=0
@@ -2272,7 +2328,12 @@ _update_f2b_ignoreip() {
     [[ -z "${_x//[[:space:]]/}" ]] && continue
     _x="$(printf '%s' "$_x" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     [[ -z "$_x" ]] && continue
-    if [[ "$_x" == *:* ]]; then V6+=("$_x"); else V4+=("$_x"); fi
+    # жёсткая валидация перед добавлением
+    if [[ "$_x" == *:* ]]; then
+      if __is_ipv6 "$_x" || __is_ipv6_cidr "$_x"; then V6+=("$_x"); fi
+    else
+      if __is_ipv4 "$_x" || __is_ipv4_cidr "$_x"; then V4+=("$_x"); fi
+    fi
   done < <(yaml_allow_all || true)
   local v4s="" v6s=""
   ((${#V4[@]})) && v4s="$(printf '%s\n' "${V4[@]}" | LC_ALL=C sort -u | tr '\n' ' ')"
@@ -2425,12 +2486,17 @@ agh_heal() {
     for PJSON in "${_paths_merge[@]}"; do
       # значение из MERGE_TMP по этому пути (через helper на jq)
       VAL="$(__get_json_at "$MERGE_TMP" "$PJSON" 2>/dev/null || echo 'null')"
-      P="$PJSON" V="$VAL" \
-        yq e -i '
-          (env(P) | from_yaml) as $p
-          | (env(V) | from_yaml) as $v
-          | if $v == null then . else setpath($p; $v) end
-        ' "$GEN_TMP" || true
+      # null пропускаем на стороне Bash — без if/then в yq (устойчиво для v4)
+      [[ "$VAL" == "null" ]] && continue
+      # Безопасная подстановка через временные файлы: load(env(...)) устраняет "Error: EOF" в yq v4
+      local _pf _vf
+      _pf="$(mktemp)" || { echo "mktemp failed for path" >&2; continue; }
+      _vf="$(mktemp)" || { rm -f -- "$_pf"; echo "mktemp failed for value" >&2; continue; }
+      printf '%s' "$PJSON" >"$_pf"
+      printf '%s' "$VAL"   >"$_vf"
+      P_FILE="$_pf" V_FILE="$_vf" \
+        yq e -i 'setpath((load(env(P_FILE))); (load(env(V_FILE))))' "$GEN_TMP" || true
+      rm -f -- "$_pf" "$_vf"
     done
   fi
   rm -f "$MERGE_TMP"
